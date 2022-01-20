@@ -22,6 +22,8 @@ The support process is accomplished via on-call rotation and the weekly on-call 
 
 The on-call engineer is responsible for responding to technical Slack comments, Slack threads, and GitHub issues raised by customers and the community which cannot handled by the Customer Success team.
 
+In the event a customer submits a support question via the "contact us" webform, sales responds and closes the loop in webform support thread to provide that next level customer experience, encouraging the user to reach out on slack, or webform if they have any more questions.
+
 Slack messages have a 24 hour SLA and the Slack channel should have a notice at the top explaining so.
 
 The weekly on-call retro at Fleet provides time to discuss highlights and answer the following questions about the previous week's on-call:
