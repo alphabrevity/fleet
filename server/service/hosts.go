@@ -2,11 +2,16 @@ package service
 
 import (
 	"context"
+	"fmt"
+	"net/http"
 	"time"
 
+	"github.com/fleetdm/fleet/v4/server/contexts/authz"
 	"github.com/fleetdm/fleet/v4/server/contexts/ctxerr"
+	"github.com/fleetdm/fleet/v4/server/contexts/logging"
 	"github.com/fleetdm/fleet/v4/server/contexts/viewer"
 	"github.com/fleetdm/fleet/v4/server/fleet"
+	"github.com/gocarina/gocsv"
 )
 
 // HostResponse is the response struct that contains the full host information
@@ -14,9 +19,10 @@ import (
 // rendering in the UI.
 type HostResponse struct {
 	*fleet.Host
-	Status      fleet.HostStatus `json:"status"`
-	DisplayText string           `json:"display_text"`
-	Labels      []fleet.Label    `json:"labels,omitempty"`
+	Status      fleet.HostStatus   `json:"status"`
+	DisplayText string             `json:"display_text"`
+	Labels      []fleet.Label      `json:"labels,omitempty"`
+	Geolocation *fleet.GeoLocation `json:"geolocation,omitempty"`
 }
 
 func hostResponseForHost(ctx context.Context, svc fleet.Service, host *fleet.Host) (*HostResponse, error) {
@@ -24,6 +30,7 @@ func hostResponseForHost(ctx context.Context, svc fleet.Service, host *fleet.Hos
 		Host:        host,
 		Status:      host.Status(time.Now()),
 		DisplayText: host.Hostname,
+		Geolocation: svc.LookupGeoIP(ctx, host.PublicIP),
 	}, nil
 }
 
@@ -31,8 +38,9 @@ func hostResponseForHost(ctx context.Context, svc fleet.Service, host *fleet.Hos
 // with the HostDetail details.
 type HostDetailResponse struct {
 	fleet.HostDetail
-	Status      fleet.HostStatus `json:"status"`
-	DisplayText string           `json:"display_text"`
+	Status      fleet.HostStatus   `json:"status"`
+	DisplayText string             `json:"display_text"`
+	Geolocation *fleet.GeoLocation `json:"geolocation,omitempty"`
 }
 
 func hostDetailResponseForHost(ctx context.Context, svc fleet.Service, host *fleet.HostDetail) (*HostDetailResponse, error) {
@@ -40,6 +48,7 @@ func hostDetailResponseForHost(ctx context.Context, svc fleet.Service, host *fle
 		HostDetail:  *host,
 		Status:      host.Status(time.Now()),
 		DisplayText: host.Hostname,
+		Geolocation: svc.LookupGeoIP(ctx, host.PublicIP),
 	}, nil
 }
 
@@ -265,10 +274,13 @@ func getHostEndpoint(ctx context.Context, request interface{}, svc fleet.Service
 }
 
 func (svc *Service) GetHost(ctx context.Context, id uint) (*fleet.HostDetail, error) {
-	// First ensure the user has access to list hosts, then check the specific
-	// host once team_id is loaded.
-	if err := svc.authz.Authorize(ctx, &fleet.Host{}, fleet.ActionList); err != nil {
-		return nil, err
+	alreadyAuthd := svc.authz.IsAuthenticatedWith(ctx, authz.AuthnDeviceToken)
+	if !alreadyAuthd {
+		// First ensure the user has access to list hosts, then check the specific
+		// host once team_id is loaded.
+		if err := svc.authz.Authorize(ctx, &fleet.Host{}, fleet.ActionList); err != nil {
+			return nil, err
+		}
 	}
 
 	host, err := svc.ds.Host(ctx, id, false)
@@ -276,9 +288,11 @@ func (svc *Service) GetHost(ctx context.Context, id uint) (*fleet.HostDetail, er
 		return nil, ctxerr.Wrap(ctx, err, "get host")
 	}
 
-	// Authorize again with team loaded now that we have team_id
-	if err := svc.authz.Authorize(ctx, host, fleet.ActionRead); err != nil {
-		return nil, err
+	if !alreadyAuthd {
+		// Authorize again with team loaded now that we have team_id
+		if err := svc.authz.Authorize(ctx, host, fleet.ActionRead); err != nil {
+			return nil, err
+		}
 	}
 
 	return svc.getHostDetails(ctx, host)
@@ -304,7 +318,8 @@ func (svc *Service) checkWriteForHostIDs(ctx context.Context, ids []uint) error 
 ////////////////////////////////////////////////////////////////////////////////
 
 type getHostSummaryRequest struct {
-	TeamID *uint `query:"team_id,optional"`
+	TeamID   *uint   `query:"team_id,optional"`
+	Platform *string `query:"platform,optional"`
 }
 
 type getHostSummaryResponse struct {
@@ -316,7 +331,7 @@ func (r getHostSummaryResponse) error() error { return r.Err }
 
 func getHostSummaryEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (interface{}, error) {
 	req := request.(*getHostSummaryRequest)
-	summary, err := svc.GetHostSummary(ctx, req.TeamID)
+	summary, err := svc.GetHostSummary(ctx, req.TeamID, req.Platform)
 	if err != nil {
 		return getHostSummaryResponse{Err: err}, nil
 	}
@@ -327,7 +342,7 @@ func getHostSummaryEndpoint(ctx context.Context, request interface{}, svc fleet.
 	return resp, nil
 }
 
-func (svc *Service) GetHostSummary(ctx context.Context, teamID *uint) (*fleet.HostSummary, error) {
+func (svc *Service) GetHostSummary(ctx context.Context, teamID *uint, platform *string) (*fleet.HostSummary, error) {
 	if err := svc.authz.Authorize(ctx, &fleet.Host{TeamID: teamID}, fleet.ActionList); err != nil {
 		return nil, err
 	}
@@ -337,7 +352,7 @@ func (svc *Service) GetHostSummary(ctx context.Context, teamID *uint) (*fleet.Ho
 	}
 	filter := fleet.TeamFilter{User: vc.User, IncludeObserver: true, TeamID: teamID}
 
-	summary, err := svc.ds.GenerateHostStatusStatistics(ctx, filter, svc.clock.Now())
+	summary, err := svc.ds.GenerateHostStatusStatistics(ctx, filter, svc.clock.Now(), platform)
 	if err != nil {
 		return nil, err
 	}
@@ -544,22 +559,24 @@ func refetchHostEndpoint(ctx context.Context, request interface{}, svc fleet.Ser
 }
 
 func (svc *Service) RefetchHost(ctx context.Context, id uint) error {
-	if err := svc.authz.Authorize(ctx, &fleet.Host{}, fleet.ActionList); err != nil {
-		return err
+	if !svc.authz.IsAuthenticatedWith(ctx, authz.AuthnDeviceToken) {
+		if err := svc.authz.Authorize(ctx, &fleet.Host{}, fleet.ActionList); err != nil {
+			return err
+		}
+
+		host, err := svc.ds.HostLite(ctx, id)
+		if err != nil {
+			return ctxerr.Wrap(ctx, err, "find host for refetch")
+		}
+
+		// We verify fleet.ActionRead instead of fleet.ActionWrite because we want to allow
+		// observers to be able to refetch hosts.
+		if err := svc.authz.Authorize(ctx, host, fleet.ActionRead); err != nil {
+			return err
+		}
 	}
 
-	host, err := svc.ds.HostLite(ctx, id)
-	if err != nil {
-		return ctxerr.Wrap(ctx, err, "find host for refetch")
-	}
-
-	// We verify fleet.ActionRead instead of fleet.ActionWrite because we want to allow
-	// observers to be able to refetch hosts.
-	if err := svc.authz.Authorize(ctx, host, fleet.ActionRead); err != nil {
-		return err
-	}
-
-	if err := svc.ds.UpdateHostRefetchRequested(ctx, host.ID, true); err != nil {
+	if err := svc.ds.UpdateHostRefetchRequested(ctx, id, true); err != nil {
 		return ctxerr.Wrap(ctx, err, "save host")
 	}
 
@@ -658,18 +675,20 @@ func listHostDeviceMappingEndpoint(ctx context.Context, request interface{}, svc
 }
 
 func (svc *Service) ListHostDeviceMapping(ctx context.Context, id uint) ([]*fleet.HostDeviceMapping, error) {
-	if err := svc.authz.Authorize(ctx, &fleet.Host{}, fleet.ActionList); err != nil {
-		return nil, err
-	}
+	if !svc.authz.IsAuthenticatedWith(ctx, authz.AuthnDeviceToken) {
+		if err := svc.authz.Authorize(ctx, &fleet.Host{}, fleet.ActionList); err != nil {
+			return nil, err
+		}
 
-	host, err := svc.ds.HostLite(ctx, id)
-	if err != nil {
-		return nil, ctxerr.Wrap(ctx, err, "get host")
-	}
+		host, err := svc.ds.HostLite(ctx, id)
+		if err != nil {
+			return nil, ctxerr.Wrap(ctx, err, "get host")
+		}
 
-	// Authorize again with team loaded now that we have team_id
-	if err := svc.authz.Authorize(ctx, host, fleet.ActionRead); err != nil {
-		return nil, err
+		// Authorize again with team loaded now that we have team_id
+		if err := svc.authz.Authorize(ctx, host, fleet.ActionRead); err != nil {
+			return nil, err
+		}
 	}
 
 	return svc.ds.ListHostDeviceMapping(ctx, id)
@@ -700,17 +719,19 @@ func getMacadminsDataEndpoint(ctx context.Context, request interface{}, svc flee
 }
 
 func (svc *Service) MacadminsData(ctx context.Context, id uint) (*fleet.MacadminsData, error) {
-	if err := svc.authz.Authorize(ctx, &fleet.Host{}, fleet.ActionList); err != nil {
-		return nil, err
-	}
+	if !svc.authz.IsAuthenticatedWith(ctx, authz.AuthnDeviceToken) {
+		if err := svc.authz.Authorize(ctx, &fleet.Host{}, fleet.ActionList); err != nil {
+			return nil, err
+		}
 
-	host, err := svc.ds.HostLite(ctx, id)
-	if err != nil {
-		return nil, ctxerr.Wrap(ctx, err, "find host for macadmins")
-	}
+		host, err := svc.ds.HostLite(ctx, id)
+		if err != nil {
+			return nil, ctxerr.Wrap(ctx, err, "find host for macadmins")
+		}
 
-	if err := svc.authz.Authorize(ctx, host, fleet.ActionRead); err != nil {
-		return nil, err
+		if err := svc.authz.Authorize(ctx, host, fleet.ActionRead); err != nil {
+			return nil, err
+		}
 	}
 
 	var munkiInfo *fleet.HostMunkiInfo
@@ -748,4 +769,177 @@ func (svc *Service) MacadminsData(ctx context.Context, id uint) (*fleet.Macadmin
 	}
 
 	return data, nil
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Aggregated Macadmins
+////////////////////////////////////////////////////////////////////////////////
+
+type getAggregatedMacadminsDataRequest struct {
+	TeamID *uint `query:"team_id,optional"`
+}
+
+type getAggregatedMacadminsDataResponse struct {
+	Err       error                          `json:"error,omitempty"`
+	Macadmins *fleet.AggregatedMacadminsData `json:"macadmins"`
+}
+
+func (r getAggregatedMacadminsDataResponse) error() error { return r.Err }
+
+func getAggregatedMacadminsDataEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (interface{}, error) {
+	req := request.(*getAggregatedMacadminsDataRequest)
+	data, err := svc.AggregatedMacadminsData(ctx, req.TeamID)
+	if err != nil {
+		return getAggregatedMacadminsDataResponse{Err: err}, nil
+	}
+	return getAggregatedMacadminsDataResponse{Macadmins: data}, nil
+}
+
+func (svc *Service) AggregatedMacadminsData(ctx context.Context, teamID *uint) (*fleet.AggregatedMacadminsData, error) {
+	if err := svc.authz.Authorize(ctx, &fleet.Host{TeamID: teamID}, fleet.ActionList); err != nil {
+		return nil, err
+	}
+
+	if teamID != nil {
+		_, err := svc.ds.Team(ctx, *teamID)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	agg := &fleet.AggregatedMacadminsData{}
+
+	versions, munkiUpdatedAt, err := svc.ds.AggregatedMunkiVersion(ctx, teamID)
+	if err != nil {
+		return nil, err
+	}
+	agg.MunkiVersions = versions
+
+	status, mdmUpdatedAt, err := svc.ds.AggregatedMDMStatus(ctx, teamID)
+	if err != nil {
+		return nil, err
+	}
+	agg.MDMStatus = status
+
+	agg.CountsUpdatedAt = munkiUpdatedAt
+	if mdmUpdatedAt.After(munkiUpdatedAt) {
+		agg.CountsUpdatedAt = mdmUpdatedAt
+	}
+
+	return agg, nil
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Hosts Report in CSV downloadable file
+////////////////////////////////////////////////////////////////////////////////
+
+type hostsReportRequest struct {
+	Opts    fleet.HostListOptions `url:"host_options"`
+	LabelID *uint                 `query:"label_id,optional"`
+	Format  string                `query:"format"`
+}
+
+type hostsReportResponse struct {
+	Hosts []*fleet.Host `json:"-"` // they get rendered explicitly, in csv
+	Err   error         `json:"error,omitempty"`
+}
+
+func (r hostsReportResponse) error() error { return r.Err }
+
+func (r hostsReportResponse) hijackRender(ctx context.Context, w http.ResponseWriter) {
+	w.Header().Add("Content-Disposition", fmt.Sprintf(`attachment; filename="Hosts %s.csv"`, time.Now().Format("2006-01-02")))
+	w.Header().Set("Content-Type", "text/csv")
+	w.WriteHeader(http.StatusOK)
+	if err := gocsv.Marshal(r.Hosts, w); err != nil {
+		logging.WithErr(ctx, err)
+	}
+}
+
+func hostsReportEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (interface{}, error) {
+	req := request.(*hostsReportRequest)
+
+	// for now, only csv format is allowed
+	if req.Format != "csv" {
+		// prevent returning an "unauthorized" error, we want that specific error
+		if az, ok := authz.FromContext(ctx); ok {
+			az.SetChecked()
+		}
+		err := ctxerr.Wrap(ctx, fleet.NewInvalidArgumentError("format", "unsupported or unspecified report format").
+			WithStatus(http.StatusUnsupportedMediaType))
+		return hostsReportResponse{Err: err}, nil
+	}
+
+	// Those are not supported when listing hosts in a label, so that's just to
+	// make the output consistent whether a label is used or not.
+	req.Opts.DisableFailingPolicies = true
+	req.Opts.AdditionalFilters = nil
+	req.Opts.Page = 0
+	req.Opts.PerPage = 0 // explicitly disable any limit, we want all matching hosts
+	req.Opts.After = ""
+
+	var (
+		hosts []*fleet.Host
+		err   error
+	)
+
+	if req.LabelID == nil {
+		hosts, err = svc.ListHosts(ctx, req.Opts)
+	} else {
+		hosts, err = svc.ListHostsInLabel(ctx, *req.LabelID, req.Opts)
+	}
+	if err != nil {
+		return hostsReportResponse{Err: err}, nil
+	}
+	return hostsReportResponse{Hosts: hosts}, nil
+}
+
+type osVersionsRequest struct {
+	TeamID   *uint   `query:"team_id,optional"`
+	Platform *string `query:"platform,optional"`
+}
+
+type osVersionsResponse struct {
+	CountsUpdatedAt *time.Time        `json:"counts_updated_at"`
+	OSVersions      []fleet.OSVersion `json:"os_versions"`
+	Err             error             `json:"error,omitempty"`
+}
+
+func (r osVersionsResponse) error() error { return r.Err }
+
+func osVersionsEndpoint(ctx context.Context, request interface{}, svc fleet.Service) (interface{}, error) {
+	req := request.(*osVersionsRequest)
+
+	osVersions, err := svc.OSVersions(ctx, req.TeamID, req.Platform)
+	if err != nil {
+		return &osVersionsResponse{Err: err}, nil
+	}
+
+	return &osVersionsResponse{
+		CountsUpdatedAt: &osVersions.CountsUpdatedAt,
+		OSVersions:      osVersions.OSVersions,
+	}, nil
+}
+
+func (svc *Service) OSVersions(ctx context.Context, teamID *uint, platform *string) (*fleet.OSVersions, error) {
+	if err := svc.authz.Authorize(ctx, &fleet.Host{TeamID: teamID}, fleet.ActionList); err != nil {
+		return nil, err
+	}
+
+	osVersions, err := svc.ds.OSVersions(ctx, teamID, platform)
+	if err != nil && fleet.IsNotFound(err) {
+		// differentiate case where team was added after UpdateOSVersions last ran
+		if teamID != nil {
+			// most of the time, team should exist so checking here saves unnecessary db calls
+			_, err := svc.ds.Team(ctx, *teamID)
+			if err != nil {
+				return nil, err
+			}
+		}
+		// if team exists but stats have not yet been gathered, return empty JSON array
+		osVersions = &fleet.OSVersions{}
+	} else if err != nil {
+		return nil, err
+	}
+
+	return osVersions, nil
 }

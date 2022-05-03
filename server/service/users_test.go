@@ -2,10 +2,12 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"testing"
 	"time"
 
+	"github.com/fleetdm/fleet/v4/server/authz"
 	"github.com/fleetdm/fleet/v4/server/contexts/ctxerr"
 	"github.com/fleetdm/fleet/v4/server/contexts/viewer"
 	"github.com/fleetdm/fleet/v4/server/datastore/mysql"
@@ -19,7 +21,7 @@ import (
 
 func TestUserAuth(t *testing.T) {
 	ds := new(mock.Store)
-	svc := newTestService(ds, nil, nil)
+	svc := newTestService(t, ds, nil, nil)
 
 	ds.InviteByTokenFunc = func(ctx context.Context, token string) (*fleet.Invite, error) {
 		return &fleet.Invite{
@@ -40,18 +42,27 @@ func TestUserAuth(t *testing.T) {
 	ds.InviteByEmailFunc = func(ctx context.Context, email string) (*fleet.Invite, error) {
 		return nil, errors.New("AA")
 	}
+
+	userTeamMaintainerID := uint(999)
+	userGlobalMaintainerID := uint(888)
+	var self *fleet.User // to be set by tests
 	ds.UserByIDFunc = func(ctx context.Context, id uint) (*fleet.User, error) {
-		if id == 999 {
+		switch id {
+		case userTeamMaintainerID:
 			return &fleet.User{
-				ID:    999,
+				ID:    userTeamMaintainerID,
 				Teams: []fleet.UserTeam{{Team: fleet.Team{ID: 1}, Role: fleet.RoleMaintainer}},
 			}, nil
+		case userGlobalMaintainerID:
+			return &fleet.User{
+				ID:         userGlobalMaintainerID,
+				GlobalRole: ptr.String(fleet.RoleMaintainer),
+			}, nil
+		default:
+			return self, nil
 		}
-		return &fleet.User{
-			ID:         888,
-			GlobalRole: ptr.String(fleet.RoleMaintainer),
-		}, nil
 	}
+
 	ds.SaveUserFunc = func(ctx context.Context, user *fleet.User) error {
 		return nil
 	}
@@ -69,92 +80,277 @@ func TestUserAuth(t *testing.T) {
 	}
 
 	testCases := []struct {
-		name                  string
-		user                  *fleet.User
+		name string
+		user *fleet.User
+
 		shouldFailGlobalWrite bool
 		shouldFailTeamWrite   bool
-		shouldFailRead        bool
-		shouldFailDeleteReset bool
+
+		shouldFailWriteRoleGlobalToGlobal    bool
+		shouldFailWriteRoleGlobalToTeam      bool
+		shouldFailWriteRoleTeamToAnotherTeam bool
+		shouldFailWriteRoleTeamToGlobal      bool
+
+		shouldFailWriteRoleOwnDomain bool
+
+		shouldFailGlobalRead bool
+		shouldFailTeamRead   bool
+
+		shouldFailGlobalDelete bool
+		shouldFailTeamDelete   bool
+
+		shouldFailGlobalPasswordReset bool
+		shouldFailTeamPasswordReset   bool
+
+		shouldFailGlobalChangePassword bool
+		shouldFailTeamChangePassword   bool
+
+		shouldFailListAll  bool
+		shouldFailListTeam bool
 	}{
 		{
-			"global admin",
-			&fleet.User{GlobalRole: ptr.String(fleet.RoleAdmin)},
-			false,
-			false,
-			false,
-			false,
+			name:                                 "global admin",
+			user:                                 &fleet.User{ID: 1000, GlobalRole: ptr.String(fleet.RoleAdmin)},
+			shouldFailGlobalWrite:                false,
+			shouldFailTeamWrite:                  false,
+			shouldFailWriteRoleGlobalToGlobal:    false,
+			shouldFailWriteRoleGlobalToTeam:      false,
+			shouldFailWriteRoleTeamToAnotherTeam: false,
+			shouldFailWriteRoleTeamToGlobal:      false,
+			shouldFailWriteRoleOwnDomain:         false,
+			shouldFailGlobalRead:                 false,
+			shouldFailTeamRead:                   false,
+			shouldFailGlobalDelete:               false,
+			shouldFailTeamDelete:                 false,
+			shouldFailGlobalPasswordReset:        false,
+			shouldFailTeamPasswordReset:          false,
+			shouldFailGlobalChangePassword:       false,
+			shouldFailTeamChangePassword:         false,
+			shouldFailListAll:                    false,
+			shouldFailListTeam:                   false,
 		},
 		{
-			"global maintainer",
-			&fleet.User{GlobalRole: ptr.String(fleet.RoleMaintainer)},
-			true,
-			true,
-			false,
-			true,
+			name:                                 "global maintainer",
+			user:                                 &fleet.User{ID: 1000, GlobalRole: ptr.String(fleet.RoleMaintainer)},
+			shouldFailGlobalWrite:                true,
+			shouldFailTeamWrite:                  true,
+			shouldFailWriteRoleGlobalToGlobal:    true,
+			shouldFailWriteRoleGlobalToTeam:      true,
+			shouldFailWriteRoleTeamToAnotherTeam: true,
+			shouldFailWriteRoleTeamToGlobal:      true,
+			shouldFailWriteRoleOwnDomain:         true,
+			shouldFailGlobalRead:                 true,
+			shouldFailTeamRead:                   true,
+			shouldFailGlobalDelete:               true,
+			shouldFailTeamDelete:                 true,
+			shouldFailGlobalPasswordReset:        true,
+			shouldFailTeamPasswordReset:          true,
+			shouldFailGlobalChangePassword:       true,
+			shouldFailTeamChangePassword:         true,
+			shouldFailListAll:                    true,
+			shouldFailListTeam:                   true,
 		},
 		{
-			"global observer",
-			&fleet.User{GlobalRole: ptr.String(fleet.RoleObserver)},
-			true,
-			true,
-			false,
-			true,
+			name:                                 "global observer",
+			user:                                 &fleet.User{ID: 1000, GlobalRole: ptr.String(fleet.RoleObserver)},
+			shouldFailGlobalWrite:                true,
+			shouldFailTeamWrite:                  true,
+			shouldFailWriteRoleGlobalToGlobal:    true,
+			shouldFailWriteRoleGlobalToTeam:      true,
+			shouldFailWriteRoleTeamToAnotherTeam: true,
+			shouldFailWriteRoleTeamToGlobal:      true,
+			shouldFailWriteRoleOwnDomain:         true,
+			shouldFailGlobalRead:                 true,
+			shouldFailTeamRead:                   true,
+			shouldFailGlobalDelete:               true,
+			shouldFailTeamDelete:                 true,
+			shouldFailGlobalPasswordReset:        true,
+			shouldFailTeamPasswordReset:          true,
+			shouldFailGlobalChangePassword:       true,
+			shouldFailTeamChangePassword:         true,
+			shouldFailListAll:                    true,
+			shouldFailListTeam:                   true,
 		},
 		{
-			"team admin, belongs to team",
-			&fleet.User{Teams: []fleet.UserTeam{{Team: fleet.Team{ID: 1}, Role: fleet.RoleAdmin}}},
-			true,
-			false,
-			false,
-			true,
+			name:                                 "team admin, belongs to team",
+			user:                                 &fleet.User{ID: 1000, Teams: []fleet.UserTeam{{Team: fleet.Team{ID: 1}, Role: fleet.RoleAdmin}}},
+			shouldFailGlobalWrite:                true,
+			shouldFailTeamWrite:                  false,
+			shouldFailWriteRoleGlobalToGlobal:    true,
+			shouldFailWriteRoleGlobalToTeam:      true,
+			shouldFailWriteRoleTeamToAnotherTeam: true,
+			shouldFailWriteRoleTeamToGlobal:      true,
+			shouldFailWriteRoleOwnDomain:         false,
+			shouldFailGlobalRead:                 true,
+			shouldFailTeamRead:                   false,
+			shouldFailGlobalDelete:               true,
+			shouldFailTeamDelete:                 false,
+			shouldFailGlobalPasswordReset:        true,
+			shouldFailTeamPasswordReset:          true,
+			shouldFailGlobalChangePassword:       true,
+			shouldFailTeamChangePassword:         true,
+			shouldFailListAll:                    true,
+			shouldFailListTeam:                   false,
 		},
 		{
-			"team maintainer, belongs to team",
-			&fleet.User{Teams: []fleet.UserTeam{{Team: fleet.Team{ID: 1}, Role: fleet.RoleMaintainer}}},
-			true,
-			true,
-			false,
-			true,
+			name:                                 "team maintainer, belongs to team",
+			user:                                 &fleet.User{ID: 1000, Teams: []fleet.UserTeam{{Team: fleet.Team{ID: 1}, Role: fleet.RoleMaintainer}}},
+			shouldFailGlobalWrite:                true,
+			shouldFailTeamWrite:                  true,
+			shouldFailWriteRoleGlobalToGlobal:    true,
+			shouldFailWriteRoleGlobalToTeam:      true,
+			shouldFailWriteRoleTeamToAnotherTeam: true,
+			shouldFailWriteRoleTeamToGlobal:      true,
+			shouldFailWriteRoleOwnDomain:         true,
+			shouldFailGlobalRead:                 true,
+			shouldFailTeamRead:                   true,
+			shouldFailGlobalDelete:               true,
+			shouldFailTeamDelete:                 true,
+			shouldFailGlobalPasswordReset:        true,
+			shouldFailTeamPasswordReset:          true,
+			shouldFailGlobalChangePassword:       true,
+			shouldFailTeamChangePassword:         true,
+			shouldFailListAll:                    true,
+			shouldFailListTeam:                   true,
 		},
 		{
-			"team observer, belongs to team",
-			&fleet.User{Teams: []fleet.UserTeam{{Team: fleet.Team{ID: 1}, Role: fleet.RoleObserver}}},
-			true,
-			true,
-			false,
-			true,
+			name:                                 "team observer, belongs to team",
+			user:                                 &fleet.User{ID: 1000, Teams: []fleet.UserTeam{{Team: fleet.Team{ID: 1}, Role: fleet.RoleObserver}}},
+			shouldFailGlobalWrite:                true,
+			shouldFailTeamWrite:                  true,
+			shouldFailWriteRoleGlobalToGlobal:    true,
+			shouldFailWriteRoleGlobalToTeam:      true,
+			shouldFailWriteRoleTeamToAnotherTeam: true,
+			shouldFailWriteRoleTeamToGlobal:      true,
+			shouldFailWriteRoleOwnDomain:         true,
+			shouldFailGlobalRead:                 true,
+			shouldFailTeamRead:                   true,
+			shouldFailGlobalDelete:               true,
+			shouldFailTeamDelete:                 true,
+			shouldFailGlobalPasswordReset:        true,
+			shouldFailTeamPasswordReset:          true,
+			shouldFailGlobalChangePassword:       true,
+			shouldFailTeamChangePassword:         true,
+			shouldFailListAll:                    true,
+			shouldFailListTeam:                   true,
 		},
 		{
-			"team maintainer, DOES NOT belong to team",
-			&fleet.User{Teams: []fleet.UserTeam{{Team: fleet.Team{ID: 2}, Role: fleet.RoleMaintainer}}},
-			true,
-			true,
-			false,
-			true,
+			name:                                 "team maintainer, DOES NOT belong to team",
+			user:                                 &fleet.User{ID: 1000, Teams: []fleet.UserTeam{{Team: fleet.Team{ID: 2}, Role: fleet.RoleMaintainer}}},
+			shouldFailGlobalWrite:                true,
+			shouldFailTeamWrite:                  true,
+			shouldFailWriteRoleGlobalToGlobal:    true,
+			shouldFailWriteRoleGlobalToTeam:      true,
+			shouldFailWriteRoleTeamToAnotherTeam: true,
+			shouldFailWriteRoleTeamToGlobal:      true,
+			shouldFailWriteRoleOwnDomain:         true,
+			shouldFailGlobalRead:                 true,
+			shouldFailTeamRead:                   true,
+			shouldFailGlobalDelete:               true,
+			shouldFailTeamDelete:                 true,
+			shouldFailGlobalPasswordReset:        true,
+			shouldFailTeamPasswordReset:          true,
+			shouldFailGlobalChangePassword:       true,
+			shouldFailTeamChangePassword:         true,
+			shouldFailListAll:                    true,
+			shouldFailListTeam:                   true,
 		},
 		{
-			"team admin, DOES NOT belong to team",
-			&fleet.User{Teams: []fleet.UserTeam{{Team: fleet.Team{ID: 2}, Role: fleet.RoleAdmin}}},
-			true,
-			true,
-			false,
-			true,
+			name:                                 "team admin, DOES NOT belong to team",
+			user:                                 &fleet.User{ID: 1000, Teams: []fleet.UserTeam{{Team: fleet.Team{ID: 2}, Role: fleet.RoleAdmin}}},
+			shouldFailGlobalWrite:                true,
+			shouldFailTeamWrite:                  true,
+			shouldFailWriteRoleGlobalToGlobal:    true,
+			shouldFailWriteRoleGlobalToTeam:      true,
+			shouldFailWriteRoleTeamToAnotherTeam: true,
+			shouldFailWriteRoleTeamToGlobal:      true,
+			shouldFailWriteRoleOwnDomain:         false, // this is testing changing its own role in the team it belongs to.
+			shouldFailGlobalRead:                 true,
+			shouldFailTeamRead:                   true,
+			shouldFailGlobalDelete:               true,
+			shouldFailTeamDelete:                 true,
+			shouldFailGlobalPasswordReset:        true,
+			shouldFailTeamPasswordReset:          true,
+			shouldFailGlobalChangePassword:       true,
+			shouldFailTeamChangePassword:         true,
+			shouldFailListAll:                    true,
+			shouldFailListTeam:                   true,
 		},
 		{
-			"team observer, DOES NOT belong to team",
-			&fleet.User{Teams: []fleet.UserTeam{{Team: fleet.Team{ID: 2}, Role: fleet.RoleObserver}}},
-			true,
-			true,
-			false,
-			true,
+			name:                                 "team observer, DOES NOT belong to team",
+			user:                                 &fleet.User{ID: 1000, Teams: []fleet.UserTeam{{Team: fleet.Team{ID: 2}, Role: fleet.RoleObserver}}},
+			shouldFailGlobalWrite:                true,
+			shouldFailTeamWrite:                  true,
+			shouldFailWriteRoleGlobalToGlobal:    true,
+			shouldFailWriteRoleGlobalToTeam:      true,
+			shouldFailWriteRoleTeamToAnotherTeam: true,
+			shouldFailWriteRoleTeamToGlobal:      true,
+			shouldFailWriteRoleOwnDomain:         true,
+			shouldFailGlobalRead:                 true,
+			shouldFailTeamRead:                   true,
+			shouldFailGlobalDelete:               true,
+			shouldFailTeamDelete:                 true,
+			shouldFailGlobalPasswordReset:        true,
+			shouldFailTeamPasswordReset:          true,
+			shouldFailGlobalChangePassword:       true,
+			shouldFailTeamChangePassword:         true,
+			shouldFailListAll:                    true,
+			shouldFailListTeam:                   true,
 		},
 	}
 	for _, tt := range testCases {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := viewer.NewContext(context.Background(), viewer.Viewer{User: tt.user})
 
+			tt.user.SetPassword("p4ssw0rd.", 10, 10)
+
+			// To test a user reading/modifying itself.
+			u := *tt.user
+			self = &u
+
+			// A user can always read itself (read rego action).
+			_, err := svc.User(ctx, tt.user.ID)
+			require.NoError(t, err)
+
+			// A user can always write itself (write rego action).
+			_, err = svc.ModifyUser(ctx, tt.user.ID, fleet.UserPayload{Name: ptr.String("Foo")})
+			require.NoError(t, err)
+
+			// A user can always change its own password (change_password rego action).
+			_, err = svc.ModifyUser(ctx, tt.user.ID, fleet.UserPayload{Password: ptr.String("p4ssw0rd."), NewPassword: ptr.String("p4ssw0rd.3")})
+			require.NoError(t, err)
+
+			changeRole := func(role string) string {
+				switch role {
+				case fleet.RoleMaintainer:
+					return fleet.RoleAdmin // promote
+				case fleet.RoleAdmin:
+					return fleet.RoleMaintainer // demote
+				case fleet.RoleObserver:
+					return fleet.RoleAdmin // promote
+				default:
+					t.Fatalf("unknown role: %s", role)
+					return ""
+				}
+			}
+
+			// Test a user modifying its own role within its domain (write_role rego action).
+			if tt.user.GlobalRole != nil {
+				_, err = svc.ModifyUser(ctx, tt.user.ID, fleet.UserPayload{GlobalRole: ptr.String(changeRole(*tt.user.GlobalRole))})
+				checkAuthErr(t, tt.shouldFailWriteRoleOwnDomain, err)
+			} else { // Team user
+				ownTeamDifferentRole := []fleet.UserTeam{
+					{
+						Team: fleet.Team{ID: tt.user.Teams[0].ID},
+						Role: changeRole(tt.user.Teams[0].Role),
+					},
+				}
+				_, err = svc.ModifyUser(ctx, tt.user.ID, fleet.UserPayload{Teams: &ownTeamDifferentRole})
+				checkAuthErr(t, tt.shouldFailWriteRoleOwnDomain, err)
+			}
+
 			teams := []fleet.UserTeam{{Team: fleet.Team{ID: 1}, Role: fleet.RoleMaintainer}}
-			_, err := svc.CreateUser(ctx, fleet.UserPayload{
+			_, err = svc.CreateUser(ctx, fleet.UserPayload{
 				Name:     ptr.String("Some Name"),
 				Email:    ptr.String("some@email.com"),
 				Password: ptr.String("passw0rd."),
@@ -170,29 +366,54 @@ func TestUserAuth(t *testing.T) {
 			})
 			checkAuthErr(t, tt.shouldFailGlobalWrite, err)
 
-			_, err = svc.ModifyUser(ctx, 999, fleet.UserPayload{Teams: &teams})
+			_, err = svc.ModifyUser(ctx, userGlobalMaintainerID, fleet.UserPayload{Name: ptr.String("Foo")})
+			checkAuthErr(t, tt.shouldFailGlobalWrite, err)
+
+			_, err = svc.ModifyUser(ctx, userTeamMaintainerID, fleet.UserPayload{Name: ptr.String("Bar")})
 			checkAuthErr(t, tt.shouldFailTeamWrite, err)
 
-			_, err = svc.ModifyUser(ctx, 888, fleet.UserPayload{Teams: &teams})
-			checkAuthErr(t, tt.shouldFailGlobalWrite, err)
+			_, err = svc.ModifyUser(ctx, userGlobalMaintainerID, fleet.UserPayload{GlobalRole: ptr.String(fleet.RoleMaintainer)})
+			checkAuthErr(t, tt.shouldFailWriteRoleGlobalToGlobal, err)
 
-			_, err = svc.ModifyUser(ctx, 888, fleet.UserPayload{GlobalRole: ptr.String(fleet.RoleMaintainer)})
-			checkAuthErr(t, tt.shouldFailGlobalWrite, err)
+			_, err = svc.ModifyUser(ctx, userGlobalMaintainerID, fleet.UserPayload{Teams: &teams})
+			checkAuthErr(t, tt.shouldFailWriteRoleGlobalToTeam, err)
 
-			err = svc.DeleteUser(ctx, 999)
-			checkAuthErr(t, tt.shouldFailDeleteReset, err)
+			anotherTeams := []fleet.UserTeam{{Team: fleet.Team{ID: 2}, Role: fleet.RoleMaintainer}}
+			_, err = svc.ModifyUser(ctx, userTeamMaintainerID, fleet.UserPayload{Teams: &anotherTeams})
+			checkAuthErr(t, tt.shouldFailWriteRoleTeamToAnotherTeam, err)
 
-			_, err = svc.RequirePasswordReset(ctx, 999, false)
-			checkAuthErr(t, tt.shouldFailDeleteReset, err)
+			_, err = svc.ModifyUser(ctx, userTeamMaintainerID, fleet.UserPayload{GlobalRole: ptr.String(fleet.RoleMaintainer)})
+			checkAuthErr(t, tt.shouldFailWriteRoleTeamToGlobal, err)
+
+			_, err = svc.User(ctx, userGlobalMaintainerID)
+			checkAuthErr(t, tt.shouldFailGlobalRead, err)
+
+			_, err = svc.User(ctx, userTeamMaintainerID)
+			checkAuthErr(t, tt.shouldFailTeamRead, err)
+
+			err = svc.DeleteUser(ctx, userGlobalMaintainerID)
+			checkAuthErr(t, tt.shouldFailGlobalDelete, err)
+
+			err = svc.DeleteUser(ctx, userTeamMaintainerID)
+			checkAuthErr(t, tt.shouldFailTeamDelete, err)
+
+			_, err = svc.RequirePasswordReset(ctx, userGlobalMaintainerID, false)
+			checkAuthErr(t, tt.shouldFailGlobalPasswordReset, err)
+
+			_, err = svc.RequirePasswordReset(ctx, userTeamMaintainerID, false)
+			checkAuthErr(t, tt.shouldFailTeamPasswordReset, err)
+
+			_, err = svc.ModifyUser(ctx, userGlobalMaintainerID, fleet.UserPayload{NewPassword: ptr.String("passw0rd.2")})
+			checkAuthErr(t, tt.shouldFailGlobalChangePassword, err)
+
+			_, err = svc.ModifyUser(ctx, userTeamMaintainerID, fleet.UserPayload{NewPassword: ptr.String("passw0rd.2")})
+			checkAuthErr(t, tt.shouldFailTeamChangePassword, err)
 
 			_, err = svc.ListUsers(ctx, fleet.UserListOptions{})
-			checkAuthErr(t, tt.shouldFailRead, err)
+			checkAuthErr(t, tt.shouldFailListAll, err)
 
-			_, err = svc.User(ctx, 999)
-			checkAuthErr(t, tt.shouldFailRead, err)
-
-			_, err = svc.User(ctx, 888)
-			checkAuthErr(t, tt.shouldFailRead, err)
+			_, err = svc.ListUsers(ctx, fleet.UserListOptions{TeamID: 1})
+			checkAuthErr(t, tt.shouldFailListTeam, err)
 		})
 	}
 }
@@ -209,6 +430,12 @@ func TestModifyUserEmail(t *testing.T) {
 	}
 	ms.UserByIDFunc = func(ctx context.Context, id uint) (*fleet.User, error) {
 		return user, nil
+	}
+	ms.UserByEmailFunc = func(ctx context.Context, email string) (*fleet.User, error) {
+		return nil, notFoundErr{}
+	}
+	ms.InviteByEmailFunc = func(ctx context.Context, email string) (*fleet.Invite, error) {
+		return nil, notFoundErr{}
 	}
 	ms.AppConfigFunc = func(ctx context.Context) (*fleet.AppConfig, error) {
 		config := &fleet.AppConfig{
@@ -229,7 +456,7 @@ func TestModifyUserEmail(t *testing.T) {
 		assert.Equal(t, "minion", u.Position)
 		return nil
 	}
-	svc := newTestService(ms, nil, nil)
+	svc := newTestService(t, ms, nil, nil)
 	ctx := context.Background()
 	ctx = viewer.NewContext(ctx, viewer.Viewer{User: user})
 	payload := fleet.UserPayload{
@@ -271,7 +498,7 @@ func TestModifyUserEmailNoPassword(t *testing.T) {
 	ms.SaveUserFunc = func(ctx context.Context, u *fleet.User) error {
 		return nil
 	}
-	svc := newTestService(ms, nil, nil)
+	svc := newTestService(t, ms, nil, nil)
 	ctx := context.Background()
 	ctx = viewer.NewContext(ctx, viewer.Viewer{User: user})
 	payload := fleet.UserPayload{
@@ -317,7 +544,7 @@ func TestModifyAdminUserEmailNoPassword(t *testing.T) {
 	ms.SaveUserFunc = func(ctx context.Context, u *fleet.User) error {
 		return nil
 	}
-	svc := newTestService(ms, nil, nil)
+	svc := newTestService(t, ms, nil, nil)
 	ctx := context.Background()
 	ctx = viewer.NewContext(ctx, viewer.Viewer{User: user})
 	payload := fleet.UserPayload{
@@ -345,6 +572,12 @@ func TestModifyAdminUserEmailPassword(t *testing.T) {
 	ms.PendingEmailChangeFunc = func(ctx context.Context, id uint, em, tk string) error {
 		return nil
 	}
+	ms.UserByEmailFunc = func(ctx context.Context, email string) (*fleet.User, error) {
+		return nil, notFoundErr{}
+	}
+	ms.InviteByEmailFunc = func(ctx context.Context, email string) (*fleet.Invite, error) {
+		return nil, notFoundErr{}
+	}
 	ms.UserByIDFunc = func(ctx context.Context, id uint) (*fleet.User, error) {
 		return user, nil
 	}
@@ -363,7 +596,7 @@ func TestModifyAdminUserEmailPassword(t *testing.T) {
 	ms.SaveUserFunc = func(ctx context.Context, u *fleet.User) error {
 		return nil
 	}
-	svc := newTestService(ms, nil, nil)
+	svc := newTestService(t, ms, nil, nil)
 	ctx := context.Background()
 	ctx = viewer.NewContext(ctx, viewer.Viewer{User: user})
 	payload := fleet.UserPayload{
@@ -398,7 +631,7 @@ func TestUsersWithDS(t *testing.T) {
 // Test that CreateUser creates a user that will be forced to
 // reset its password upon first login (see #2570).
 func testUsersCreateUserForcePasswdReset(t *testing.T, ds *mysql.Datastore) {
-	svc := newTestService(ds, nil, nil)
+	svc := newTestService(t, ds, nil, nil)
 
 	// Create admin user.
 	admin := &fleet.User{
@@ -427,7 +660,7 @@ func testUsersCreateUserForcePasswdReset(t *testing.T, ds *mysql.Datastore) {
 }
 
 func testUsersChangePassword(t *testing.T, ds *mysql.Datastore) {
-	svc := newTestService(ds, nil, nil)
+	svc := newTestService(t, ds, nil, nil)
 	users := createTestUsers(t, ds)
 	passwordChangeTests := []struct {
 		user        fleet.User
@@ -459,6 +692,7 @@ func testUsersChangePassword(t *testing.T, ds *mysql.Datastore) {
 			anyErr:      true,
 		},
 		{ // missing old password
+			user:        users["user1@example.com"],
 			newPassword: "123cataaa!",
 			wantErr:     fleet.NewInvalidArgumentError("old_password", "Old password cannot be empty"),
 		},
@@ -490,7 +724,7 @@ func testUsersChangePassword(t *testing.T, ds *mysql.Datastore) {
 }
 
 func testUsersRequirePasswordReset(t *testing.T, ds *mysql.Datastore) {
-	svc := newTestService(ds, nil, nil)
+	svc := newTestService(t, ds, nil, nil)
 	createTestUsers(t, ds)
 
 	for _, tt := range testUsers {
@@ -527,4 +761,542 @@ func testUsersRequirePasswordReset(t *testing.T, ds *mysql.Datastore) {
 			assert.False(t, checkUser.AdminForcedPasswordReset)
 		})
 	}
+}
+
+func TestPerformRequiredPasswordReset(t *testing.T) {
+	ds := mysql.CreateMySQLDS(t)
+
+	svc := newTestService(t, ds, nil, nil)
+
+	createTestUsers(t, ds)
+
+	for _, tt := range testUsers {
+		t.Run(tt.Email, func(t *testing.T) {
+			user, err := ds.UserByEmail(context.Background(), tt.Email)
+			require.Nil(t, err)
+
+			ctx := context.Background()
+
+			_, err = svc.RequirePasswordReset(test.UserContext(test.UserAdmin), user.ID, true)
+			require.Nil(t, err)
+
+			ctx = refreshCtx(t, ctx, user, ds, nil)
+
+			session, err := ds.NewSession(context.Background(), user.ID, "")
+			require.Nil(t, err)
+			ctx = refreshCtx(t, ctx, user, ds, session)
+
+			// should error when reset not required
+			_, err = svc.RequirePasswordReset(ctx, user.ID, false)
+			require.Nil(t, err)
+			ctx = refreshCtx(t, ctx, user, ds, session)
+			_, err = svc.PerformRequiredPasswordReset(ctx, "new_pass")
+			require.NotNil(t, err)
+
+			_, err = svc.RequirePasswordReset(ctx, user.ID, true)
+			require.Nil(t, err)
+			ctx = refreshCtx(t, ctx, user, ds, session)
+
+			// should error when using same password
+			_, err = svc.PerformRequiredPasswordReset(ctx, tt.PlaintextPassword)
+			require.Equal(t, "validation failed: new_password cannot reuse old password", err.Error())
+
+			// should succeed with good new password
+			u, err := svc.PerformRequiredPasswordReset(ctx, "new_pass")
+			require.Nil(t, err)
+			assert.False(t, u.AdminForcedPasswordReset)
+
+			ctx = context.Background()
+
+			// Now user should be able to login with new password
+			u, _, err = svc.Login(ctx, tt.Email, "new_pass")
+			require.Nil(t, err)
+			assert.False(t, u.AdminForcedPasswordReset)
+		})
+	}
+}
+
+func TestResetPassword(t *testing.T) {
+	ds := mysql.CreateMySQLDS(t)
+
+	svc := newTestService(t, ds, nil, nil)
+	createTestUsers(t, ds)
+	passwordResetTests := []struct {
+		token       string
+		newPassword string
+		wantErr     error
+	}{
+		{ // all good
+			token:       "abcd",
+			newPassword: "123cat!",
+		},
+		{ // prevent reuse
+			token:       "abcd",
+			newPassword: "123cat!",
+			wantErr:     fleet.NewInvalidArgumentError("new_password", "cannot reuse old password"),
+		},
+		{ // bad token
+			token:       "dcbaz",
+			newPassword: "123cat!",
+			wantErr:     sql.ErrNoRows,
+		},
+		{ // missing token
+			newPassword: "123cat!",
+			wantErr:     fleet.NewInvalidArgumentError("token", "Token cannot be empty field"),
+		},
+	}
+
+	for _, tt := range passwordResetTests {
+		t.Run("", func(t *testing.T) {
+			request := &fleet.PasswordResetRequest{
+				UpdateCreateTimestamps: fleet.UpdateCreateTimestamps{
+					CreateTimestamp: fleet.CreateTimestamp{
+						CreatedAt: time.Now(),
+					},
+					UpdateTimestamp: fleet.UpdateTimestamp{
+						UpdatedAt: time.Now(),
+					},
+				},
+				ExpiresAt: time.Now().Add(time.Hour * 24),
+				UserID:    1,
+				Token:     "abcd",
+			}
+			_, err := ds.NewPasswordResetRequest(context.Background(), request)
+			assert.Nil(t, err)
+
+			serr := svc.ResetPassword(test.UserContext(&fleet.User{ID: 1}), tt.token, tt.newPassword)
+			if tt.wantErr != nil {
+				assert.Equal(t, tt.wantErr.Error(), ctxerr.Cause(serr).Error())
+			} else {
+				assert.Nil(t, serr)
+			}
+		})
+	}
+}
+
+func refreshCtx(t *testing.T, ctx context.Context, user *fleet.User, ds fleet.Datastore, session *fleet.Session) context.Context {
+	reloadedUser, err := ds.UserByEmail(ctx, user.Email)
+	require.NoError(t, err)
+
+	return viewer.NewContext(ctx, viewer.Viewer{User: reloadedUser, Session: session})
+}
+
+func TestAuthenticatedUser(t *testing.T) {
+	ds := mysql.CreateMySQLDS(t)
+
+	createTestUsers(t, ds)
+	svc := newTestService(t, ds, nil, nil)
+	admin1, err := ds.UserByEmail(context.Background(), "admin1@example.com")
+	require.NoError(t, err)
+	admin1Session, err := ds.NewSession(context.Background(), admin1.ID, "admin1")
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	ctx = viewer.NewContext(ctx, viewer.Viewer{User: admin1, Session: admin1Session})
+	user, err := svc.AuthenticatedUser(ctx)
+	assert.Nil(t, err)
+	assert.Equal(t, user, admin1)
+}
+
+func TestIsAdminOfTheModifiedTeams(t *testing.T) {
+	type teamWithRole struct {
+		teamID uint
+		role   string
+	}
+	type roles struct {
+		global *string
+		teams  []teamWithRole
+	}
+	for _, tc := range []struct {
+		name string
+		// actionUserRoles are the roles of the user executing the role change action.
+		actionUserRoles roles
+		// targetUserOriginalTeams are the original teams the target user belongs to.
+		targetUserOriginalTeams []teamWithRole
+		// targetUserNewTeams are the new teams the target user will be added to.
+		targetUserNewTeams []teamWithRole
+
+		expected bool
+	}{
+		{
+			name: "global-admin-allmighty",
+			actionUserRoles: roles{
+				global: ptr.String(fleet.RoleAdmin),
+			},
+			targetUserOriginalTeams: []teamWithRole{
+				{
+					teamID: 1,
+					role:   fleet.RoleAdmin,
+				},
+			},
+			targetUserNewTeams: []teamWithRole{
+				{
+					teamID: 2,
+					role:   fleet.RoleAdmin,
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "global-maintainer-cannot-modify-team-users",
+			actionUserRoles: roles{
+				global: ptr.String(fleet.RoleMaintainer),
+			},
+			targetUserOriginalTeams: []teamWithRole{
+				{
+					teamID: 1,
+					role:   fleet.RoleAdmin,
+				},
+			},
+			targetUserNewTeams: []teamWithRole{
+				{
+					teamID: 1,
+					role:   fleet.RoleMaintainer,
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "team-admin-of-original-and-new",
+			actionUserRoles: roles{
+				teams: []teamWithRole{
+					{
+						teamID: 1,
+						role:   fleet.RoleAdmin,
+					},
+					{
+						teamID: 2,
+						role:   fleet.RoleAdmin,
+					},
+				},
+			},
+			targetUserOriginalTeams: []teamWithRole{
+				{
+					teamID: 1,
+					role:   fleet.RoleAdmin,
+				},
+			},
+			targetUserNewTeams: []teamWithRole{
+				{
+					teamID: 2,
+					role:   fleet.RoleAdmin,
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "team-admin-of-one-original-and-leave-other-team-unmodified",
+			actionUserRoles: roles{
+				teams: []teamWithRole{
+					{
+						teamID: 1,
+						role:   fleet.RoleMaintainer,
+					},
+					{
+						teamID: 2,
+						role:   fleet.RoleAdmin,
+					},
+				},
+			},
+			targetUserOriginalTeams: []teamWithRole{
+				{
+					teamID: 1,
+					role:   fleet.RoleMaintainer,
+				},
+				{
+					teamID: 2,
+					role:   fleet.RoleMaintainer,
+				},
+			},
+			targetUserNewTeams: []teamWithRole{
+				{
+					teamID: 1,
+					role:   fleet.RoleMaintainer,
+				},
+				{
+					teamID: 2,
+					role:   fleet.RoleAdmin,
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "team-admin-of-original-only",
+			actionUserRoles: roles{
+				teams: []teamWithRole{
+					{
+						teamID: 1,
+						role:   fleet.RoleAdmin,
+					},
+					{
+						teamID: 2,
+						role:   fleet.RoleMaintainer,
+					},
+				},
+			},
+			targetUserOriginalTeams: []teamWithRole{
+				{
+					teamID: 1,
+					role:   fleet.RoleAdmin,
+				},
+			},
+			targetUserNewTeams: []teamWithRole{
+				{
+					teamID: 2,
+					role:   fleet.RoleAdmin,
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "team-admin-of-new-only",
+			actionUserRoles: roles{
+				teams: []teamWithRole{
+					{
+						teamID: 1,
+						role:   fleet.RoleObserver,
+					},
+					{
+						teamID: 2,
+						role:   fleet.RoleAdmin,
+					},
+				},
+			},
+			targetUserOriginalTeams: []teamWithRole{
+				{
+					teamID: 1,
+					role:   fleet.RoleAdmin,
+				},
+			},
+			targetUserNewTeams: []teamWithRole{
+				{
+					teamID: 2,
+					role:   fleet.RoleAdmin,
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "team-admin-but-new-another-team-observer",
+			actionUserRoles: roles{
+				teams: []teamWithRole{
+					{
+						teamID: 1,
+						role:   fleet.RoleAdmin,
+					},
+				},
+			},
+			targetUserOriginalTeams: []teamWithRole{
+				{
+					teamID: 1,
+					role:   fleet.RoleAdmin,
+				},
+			},
+			targetUserNewTeams: []teamWithRole{
+				{
+					teamID: 1,
+					role:   fleet.RoleAdmin,
+				},
+				{
+					teamID: 2,
+					role:   fleet.RoleObserver,
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "team-admin-but-new-another-team-admin",
+			actionUserRoles: roles{
+				teams: []teamWithRole{
+					{
+						teamID: 1,
+						role:   fleet.RoleAdmin,
+					},
+				},
+			},
+			targetUserOriginalTeams: []teamWithRole{
+				{
+					teamID: 1,
+					role:   fleet.RoleAdmin,
+				},
+			},
+			targetUserNewTeams: []teamWithRole{
+				{
+					teamID: 1,
+					role:   fleet.RoleAdmin,
+				},
+				{
+					teamID: 2,
+					role:   fleet.RoleAdmin,
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "team-admin-but-original-another-team",
+			actionUserRoles: roles{
+				teams: []teamWithRole{
+					{
+						teamID: 1,
+						role:   fleet.RoleAdmin,
+					},
+				},
+			},
+			targetUserOriginalTeams: []teamWithRole{
+				{
+					teamID: 2,
+					role:   fleet.RoleAdmin,
+				},
+			},
+			targetUserNewTeams: []teamWithRole{
+				{
+					teamID: 1,
+					role:   fleet.RoleAdmin,
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "team-admin-but-change-role-another-team",
+			actionUserRoles: roles{
+				teams: []teamWithRole{
+					{
+						teamID: 1,
+						role:   fleet.RoleAdmin,
+					},
+				},
+			},
+			targetUserOriginalTeams: []teamWithRole{
+				{
+					teamID: 1,
+					role:   fleet.RoleAdmin,
+				},
+				{
+					teamID: 2,
+					role:   fleet.RoleAdmin,
+				},
+			},
+			targetUserNewTeams: []teamWithRole{
+				{
+					teamID: 1,
+					role:   fleet.RoleAdmin,
+				},
+				{
+					teamID: 2,
+					role:   fleet.RoleMaintainer,
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "team-admin-of-one-original-only",
+			actionUserRoles: roles{
+				teams: []teamWithRole{
+					{
+						teamID: 1,
+						role:   fleet.RoleMaintainer,
+					},
+					{
+						teamID: 2,
+						role:   fleet.RoleAdmin,
+					},
+				},
+			},
+			targetUserOriginalTeams: []teamWithRole{
+				{
+					teamID: 1,
+					role:   fleet.RoleMaintainer,
+				},
+				{
+					teamID: 2,
+					role:   fleet.RoleMaintainer,
+				},
+			},
+			targetUserNewTeams: []teamWithRole{
+				{
+					teamID: 1,
+					role:   fleet.RoleAdmin,
+				},
+				{
+					teamID: 2,
+					role:   fleet.RoleAdmin,
+				},
+			},
+			expected: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			userTeamsFn := func(twr []teamWithRole) []fleet.UserTeam {
+				var userTeams []fleet.UserTeam
+				for _, ot := range twr {
+					userTeams = append(userTeams, fleet.UserTeam{
+						Team: fleet.Team{ID: ot.teamID},
+						Role: ot.role,
+					})
+				}
+				return userTeams
+			}
+
+			actionUserTeams := userTeamsFn(tc.actionUserRoles.teams)
+			originalUserTeams := userTeamsFn(tc.targetUserOriginalTeams)
+			newUserTeams := userTeamsFn(tc.targetUserNewTeams)
+
+			result := isAdminOfTheModifiedTeams(
+				&fleet.User{
+					GlobalRole: tc.actionUserRoles.global,
+					Teams:      actionUserTeams,
+				},
+				originalUserTeams,
+				newUserTeams,
+			)
+			require.Equal(t, tc.expected, result)
+		})
+	}
+}
+
+// TestAdminAddRoleOtherTeam is an explicit test to check that
+// that an admin cannot add itself to another team.
+func TestTeamAdminAddRoleOtherTeam(t *testing.T) {
+	ds := new(mock.Store)
+	svc := newTestService(t, ds, nil, nil)
+
+	// adminTeam2 is a team admin of team with ID=2.
+	adminTeam2 := &fleet.User{
+		ID: 1,
+		Teams: []fleet.UserTeam{
+			{
+				Team: fleet.Team{ID: 2},
+				Role: fleet.RoleAdmin,
+			},
+		},
+	}
+
+	ds.UserByIDFunc = func(ctx context.Context, id uint) (*fleet.User, error) {
+		if id != 1 {
+			return nil, &notFoundError{}
+		}
+		return adminTeam2, nil
+	}
+	ds.SaveUserFunc = func(ctx context.Context, user *fleet.User) error {
+		return nil
+	}
+
+	ctx := viewer.NewContext(context.Background(), viewer.Viewer{User: adminTeam2})
+	adminTeam2.SetPassword("p4ssw0rd.", 10, 10)
+
+	// adminTeam2 tries to add itself to team with ID=3 as admin.
+	_, err := svc.ModifyUser(ctx, adminTeam2.ID, fleet.UserPayload{
+		Teams: &[]fleet.UserTeam{
+			{
+				Team: fleet.Team{ID: 2},
+				Role: fleet.RoleAdmin,
+			},
+			{
+				Team: fleet.Team{ID: 3},
+				Role: fleet.RoleAdmin,
+			},
+		},
+	})
+	require.Equal(t, (&authz.Forbidden{}).Error(), err.Error())
+	require.False(t, ds.SaveUserFuncInvoked)
 }

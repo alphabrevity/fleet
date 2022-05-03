@@ -3,6 +3,7 @@ import { IEnrollSecret } from "interfaces/enroll_secret";
 // ignore TS error for now until these are rewritten in ts.
 // @ts-ignore
 import Fleet from "fleet";
+import { Dispatch } from "redux";
 // @ts-ignore
 import { formatErrorResponse } from "redux/nodes/entities/base/helpers";
 import {
@@ -11,6 +12,7 @@ import {
   getEnrollSecret,
   // @ts-ignore
 } from "redux/nodes/app/actions";
+import { IApiError } from "interfaces/errors";
 import config from "./config";
 
 const { actions } = config;
@@ -36,14 +38,14 @@ export const addMembers = (
   teamId: number,
   newMembers: INewMembersBody
 ): any => {
-  return (dispatch: any) => {
+  return (dispatch: Dispatch) => {
     dispatch(loadRequest());
     return Fleet.teams
       .addMembers(teamId, newMembers)
       .then((res: { team: ITeam }) => {
         return dispatch(successAction(res.team, updateSuccess));
       })
-      .catch((res: any) => {
+      .catch((res: IApiError) => {
         const errorsObject = formatErrorResponse(res);
         dispatch(addMembersFailure(errorsObject));
         throw errorsObject;
@@ -55,14 +57,14 @@ export const removeMembers = (
   teamId: number,
   removedMembers: IRemoveMembersBody
 ) => {
-  return (dispatch: any) => {
+  return (dispatch: Dispatch) => {
     dispatch(loadRequest());
     return Fleet.teams
       .removeMembers(teamId, removedMembers)
       .then((res: { team: ITeam }) => {
         return dispatch(successAction(res.team, updateSuccess));
       })
-      .catch((res: any) => {
+      .catch((res: IApiError) => {
         const errorsObject = formatErrorResponse(res);
         dispatch(removeMembersFailure(errorsObject));
         throw errorsObject;
@@ -71,14 +73,14 @@ export const removeMembers = (
 };
 
 export const transferHosts = (teamId: number, hostIds: number[]): any => {
-  return (dispatch: any) => {
+  return (dispatch: Dispatch) => {
     dispatch(loadRequest()); // TODO: ensure works when API is implemented
     return Fleet.teams
       .transferHosts(teamId, hostIds)
       .then((res: { team: ITeam }) => {
         return dispatch(successAction(res.team, updateSuccess));
       })
-      .catch((res: any) => {
+      .catch((res: IApiError) => {
         const errorsObject = formatErrorResponse(res);
         dispatch(addMembersFailure(errorsObject));
         throw errorsObject;
@@ -90,12 +92,12 @@ export const getEnrollSecrets = (team?: ITeam | null): any => {
   // This case happens when the 'No Team' options is selected. We want to
   // just call the default getEnrollSecret in this case
   if (team === null || team === undefined) {
-    return (dispatch: any) => {
+    return (dispatch: Dispatch) => {
       return dispatch(getEnrollSecret());
     };
   }
 
-  return (dispatch: any) => {
+  return (dispatch: Dispatch) => {
     return Fleet.teams
       .getEnrollSecrets(team.id)
       .then((secrets: IEnrollSecret[]) => {

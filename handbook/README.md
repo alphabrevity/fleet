@@ -2,37 +2,73 @@
 
 ## Introduction
 
-The Fleet handbook is the central guide for how we run the company. As part of our value of being transparent, the handbook is open to the world. We welcome feedback, and contributions, so please click to edit to suggest improvements throughout these pages.  
+The Fleet handbook is the central guide for how we run the company. As part of our value of [being transparent](./company.md#openness), the handbook is open to the world. We welcome feedback, and [contributions](./handbook.md#contributing-to-the-handbook), so please click to edit and suggest improvements throughout these pages.
 
-### Company
+### 🔭 Company
 
 [About Fleet](./company.md#about-fleet)
 
-[History](./company.md#history)
+[Culture](./company.md#culture)
 
 [Values](./company.md#values)
 
-[Culture](./company.md#culture)
+[Why this way?](./company.md#why-this-way)
 
-### People
+[History](./company.md#history)
 
-[Directly responsible individuals](./people.md#directly-resonsible-individuals)
+[Slack channels](./company.md#slack-channels)
 
-[Spending company money](./people.md#spending-company-money)
 
-[Meetings](./people.md#meetings)
+### ⛑ Security
 
-### Engineering
+[How we protect end-user devices](./security.md#how-we-protect-end-user-devices)
+
+[Hardware security keys](./security.md#hardware-security-keys)
+
+[GitHub Security](./security.md#git-hub-security)
+
+[Google Workspace security](./security.md#google-workspace-security)
+
+[Vulnerability management in Fleet](./security.md#vulnerability-management)
+
+### 💓 Brand
+
+[Communicating as Fleet](./brand.md#communicating-as-fleet)
+
+[Writing at Fleet](./brand.md#writing-at-fleet)
+
+[For editors](./brand.md#for-editors)
+
+[Voice and tone guidelines](./brand.md#voice-and-grammar-guidelines)
+
+[Brand resources](./brand.md#brand-resources)
+
+[Email blasts](./brand.md#email-blasts)
+
+[Fleet website](./brand.md#website)
+
+### 🪂 Community
+
+[Communities](./community.md#communities)
+
+[Fleet docs](./community.md#fleet-docs)
+
+[Community contributions (pull requests)](./community.md#community-contributions-pull-requests)
+
+[Fleet swag](./community.md#fleet-swag)
+
+### 🚀 Engineering
 
 [Release process](./engineering.md#release-process)
+[On-call rotation](./community.md#On-call-rotation) 
 
-### Product
+### ⚗️ Product
+
+[Objectives and key results](./product.md#Objectives-and-key-results)
 
 [Product design process](./product.md#product-design-process)
 
 [Product quality](./product.md#product-quality)
-
-[Fleet docs](./product.md#fleet-docs)
 
 [UI design](./product.md#ui-design)
 
@@ -40,31 +76,51 @@ The Fleet handbook is the central guide for how we run the company. As part of o
 
 [Feature flags](./product.md#feature-flags)
 
-### Growth
+[Competition](./product.md#competition)
 
-[Website](./growth.md#website)
+### 🪴 Growth
 
-[Communicating as Fleet](./growth.md#communicating-as-fleet)
+[Posting on social media as Fleet](./growth.md#posting-on-social-media-as-fleet)
 
-[Voice and grammar guidelines](./growth.md#voice-and-grammar-guidelines)
+[Promoting blog posts on social media](./growth.md#promoting-blog-posts-on-social-media)
 
-### Customers
+[Press releases](./growth.md#press-releases)
+
+[Sponsoring events](./growth.md#sponsoring-events)
+
+### 🎈 Customers
 
 [Customer succcess](./customers.md#customer-success)
 
 [Support process](./customers.md#support-process)
 
-### Community
+[Runbook](./customers.md#runbook)
 
-[Posting on social media as Fleet](./community.md#posting-on-social-media-as-fleet)
+[Incident postmortems](./customers.md#incident-postmortems)
 
-[Promoting blog posts on social media](./growth.md#promoting-blog-posts-on-social-media)
+[Customer codenames](./customers.md#customer-codenames)
 
-[Press releases](./community.md#press-releases)
+[Generating a trial license key](./customers.md#generating-a-trial-license-key)
 
-[Community contributions (pull requests)](./community.md#community-contributions-pull-requests)
+### 🧑‍🚀 People
+
+[Directly responsible individuals](./people.md#directly-resonsible-individuals)
+
+[Spending company money](./people.md#spending-company-money)
+
+[Paid time off](./people.md#paid-time-off)
+
+[Meetings](./people.md#meetings)
+
+[People ops](./people.md#people-ops)
+
+[Rituals](./people.md#rituals)
+
+[Workiversaries](./people.md#workiversaries)
 
 ### Handbook
+
+<!-- TODO: Merge this section into the main "Brand" page -->
 
 [About the handbook](./handbook.md#about-the-handbook)
 

@@ -34,19 +34,28 @@ func buildNFPM(opt Options, pkger nfpm.Packager) (string, error) {
 	}
 
 	// Initialize autoupdate metadata
-
 	updateOpt := update.DefaultOptions
-	updateOpt.Platform = "linux"
+
 	updateOpt.RootDirectory = orbitRoot
-	updateOpt.OrbitChannel = opt.OrbitChannel
-	updateOpt.OsquerydChannel = opt.OsquerydChannel
+	updateOpt.Targets = update.LinuxTargets
+
+	// Override default channels with the provided values.
+	updateOpt.Targets.SetTargetChannel("orbit", opt.OrbitChannel)
+	updateOpt.Targets.SetTargetChannel("osqueryd", opt.OsquerydChannel)
+
 	updateOpt.ServerURL = opt.UpdateURL
 	if opt.UpdateRoots != "" {
 		updateOpt.RootKeys = opt.UpdateRoots
 	}
 
-	if err := InitializeUpdates(updateOpt); err != nil {
+	updatesData, err := InitializeUpdates(updateOpt)
+	if err != nil {
 		return "", fmt.Errorf("initialize updates: %w", err)
+	}
+	log.Debug().Stringer("data", updatesData).Msg("updates initialized")
+	if opt.Version == "" {
+		// We set the package version to orbit's latest version.
+		opt.Version = updatesData.OrbitVersion
 	}
 
 	// Write files
@@ -70,6 +79,14 @@ func buildNFPM(opt Options, pkger nfpm.Packager) (string, error) {
 	postInstallPath := filepath.Join(tmpDir, "postinstall.sh")
 	if err := writePostInstall(opt, postInstallPath); err != nil {
 		return "", fmt.Errorf("write postinstall script: %w", err)
+	}
+	preRemovePath := filepath.Join(tmpDir, "preremove.sh")
+	if err := writePreRemove(opt, preRemovePath); err != nil {
+		return "", fmt.Errorf("write preremove script: %w", err)
+	}
+	postRemovePath := filepath.Join(tmpDir, "postremove.sh")
+	if err := writePostRemove(opt, postRemovePath); err != nil {
+		return "", fmt.Errorf("write postremove script: %w", err)
 	}
 
 	if opt.FleetCertificate != "" {
@@ -112,8 +129,15 @@ func buildNFPM(opt Options, pkger nfpm.Packager) (string, error) {
 		log.Debug().Interface("file", c).Msg("added file")
 	}
 
-	// Build package
+	// Add empty folders to be created.
+	for _, emptyFolder := range []string{"/var/log/osquery", "/var/log/orbit"} {
+		contents = append(contents, (&files.Content{
+			Destination: emptyFolder,
+			Type:        "dir",
+		}).WithFileInfoDefaults())
+	}
 
+	// Build package
 	info := &nfpm.Info{
 		Name:        "fleet-osquery",
 		Version:     opt.Version,
@@ -123,12 +147,10 @@ func buildNFPM(opt Options, pkger nfpm.Packager) (string, error) {
 		Homepage:    "https://fleetdm.com",
 		Overridables: nfpm.Overridables{
 			Contents: contents,
-			EmptyFolders: []string{
-				"/var/log/osquery",
-				"/var/log/orbit",
-			},
 			Scripts: nfpm.Scripts{
 				PostInstall: postInstallPath,
+				PreRemove:   preRemovePath,
+				PostRemove:  postRemovePath,
 			},
 		},
 	}
@@ -189,7 +211,9 @@ var envTemplate = template.Must(template.New("env").Parse(`
 ORBIT_UPDATE_URL={{ .UpdateURL }}
 ORBIT_ORBIT_CHANNEL={{ .OrbitChannel }}
 ORBIT_OSQUERYD_CHANNEL={{ .OsquerydChannel }}
+ORBIT_UPDATE_INTERVAL={{ .OrbitUpdateInterval }}
 {{ if .Insecure }}ORBIT_INSECURE=true{{ end }}
+{{ if .DisableUpdates }}ORBIT_DISABLE_UPDATES=true{{ end }}
 {{ if .FleetURL }}ORBIT_FLEET_URL={{.FleetURL}}{{ end }}
 {{ if .FleetCertificate }}ORBIT_FLEET_CERTIFICATE=/var/lib/orbit/fleet.pem{{ end }}
 {{ if .EnrollSecret }}ORBIT_ENROLL_SECRET={{.EnrollSecret}}{{ end }}
@@ -225,10 +249,11 @@ var postInstallTemplate = template.Must(template.New("postinstall").Parse(`
 set -e
 
 # If we have a systemd, daemon-reload away now
-if which systemctl; then
-  systemctl daemon-reload 2>/dev/null 2>&1
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl daemon-reload >/dev/null 2>&1
 {{ if .StartService -}}
   systemctl restart orbit.service 2>&1
+  systemctl enable orbit.service 2>&1
 {{- end}}
 fi
 `))
@@ -240,6 +265,31 @@ func writePostInstall(opt Options, path string) error {
 	}
 
 	if err := ioutil.WriteFile(path, contents.Bytes(), constant.DefaultFileMode); err != nil {
+		return fmt.Errorf("write file: %w", err)
+	}
+
+	return nil
+}
+
+func writePreRemove(opt Options, path string) error {
+	if err := ioutil.WriteFile(path, []byte(`#!/bin/sh
+
+set -e
+
+systemctl stop orbit.service
+systemctl disable orbit.service
+`), constant.DefaultFileMode); err != nil {
+		return fmt.Errorf("write file: %w", err)
+	}
+
+	return nil
+}
+
+func writePostRemove(opt Options, path string) error {
+	if err := ioutil.WriteFile(path, []byte(`#!/bin/sh
+
+rm -rf /var/lib/orbit /var/log/orbit /usr/local/bin/orbit /etc/default/orbit /usr/lib/systemd/system/orbit.service
+`), constant.DefaultFileMode); err != nil {
 		return fmt.Errorf("write file: %w", err)
 	}
 

@@ -12,7 +12,7 @@ import "./mode";
 import "./theme";
 
 export interface IFleetAceProps {
-  error?: string;
+  error?: string | null;
   fontSize?: number;
   label?: string;
   name?: string;
@@ -24,7 +24,7 @@ export interface IFleetAceProps {
   hint?: string;
   labelActionComponent?: React.ReactNode;
   onLoad?: (editor: IAceEditor) => void;
-  onChange?: (value: string, event?: any) => void;
+  onChange?: (value: string) => void;
   handleSubmit?: () => void;
 }
 
@@ -80,9 +80,13 @@ const FleetAce = ({
       [`${baseClass}__label--with-action`]: !!labelActionComponent,
     });
 
+    if (!label) {
+      return <></>;
+    }
+
     return (
       <div className={labelClassName}>
-        <p>{labelText}</p>
+        {labelText}
         {labelActionComponent}
       </div>
     );

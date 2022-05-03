@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"path/filepath"
 	"runtime"
+	"time"
 
 	"github.com/fleetdm/fleet/v4/orbit/pkg/packaging"
 	"github.com/rs/zerolog"
@@ -41,7 +42,7 @@ func packageCommand() *cli.Command {
 			},
 			&cli.StringFlag{
 				Name:        "fleet-certificate",
-				Usage:       "Path to server cerificate bundle",
+				Usage:       "Path to server certificate chain",
 				Destination: &opt.FleetCertificate,
 			},
 			&cli.StringFlag{
@@ -53,7 +54,6 @@ func packageCommand() *cli.Command {
 			&cli.StringFlag{
 				Name:        "version",
 				Usage:       "Version for package product",
-				Value:       "0.0.5",
 				Destination: &opt.Version,
 			},
 			&cli.BoolFlag{
@@ -84,10 +84,21 @@ func packageCommand() *cli.Command {
 				Destination: &opt.OsquerydChannel,
 			},
 			&cli.StringFlag{
+				Name:        "desktop-channel",
+				Usage:       "Update channel of desktop to use",
+				Value:       "stable",
+				Destination: &opt.DesktopChannel,
+			},
+			&cli.StringFlag{
 				Name:        "orbit-channel",
 				Usage:       "Update channel of Orbit to use",
 				Value:       "stable",
 				Destination: &opt.OrbitChannel,
+			},
+			&cli.BoolFlag{
+				Name:        "disable-updates",
+				Usage:       "Disable auto updates on the generated package",
+				Destination: &opt.DisableUpdates,
 			},
 			&cli.StringFlag{
 				Name:        "update-url",
@@ -113,6 +124,17 @@ func packageCommand() *cli.Command {
 			&cli.BoolFlag{
 				Name:  "verbose",
 				Usage: "Log detailed information when building the package",
+			},
+			&cli.BoolFlag{
+				Name:        "fleet-desktop",
+				Usage:       "Include the Fleet Desktop Application in the package",
+				Destination: &opt.Desktop,
+			},
+			&cli.DurationFlag{
+				Name:        "update-interval",
+				Usage:       "Interval that Orbit will use to check for new updates (10s, 1h, etc.)",
+				Value:       15 * time.Minute,
+				Destination: &opt.OrbitUpdateInterval,
 			},
 		},
 		Action: func(c *cli.Context) error {

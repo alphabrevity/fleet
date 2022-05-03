@@ -1,15 +1,12 @@
 /* eslint-disable  @typescript-eslint/explicit-module-boundary-types */
-import { get } from "lodash";
 
 import sendRequest from "services";
+import sendMockRequest from "services/mock_service";
 import endpoints from "fleet/endpoints";
-import helpers from "fleet/helpers";
-// import { IConfig } from "interfaces/host";
-
-// TODO add other methods from "fleet/entities/config"
+import { IConfig } from "interfaces/config";
 
 export default {
-  loadAll: () => {
+  loadAll: (): Promise<IConfig> => {
     const { CONFIG } = endpoints;
     const path = `${CONFIG}`;
 
@@ -33,22 +30,14 @@ export default {
       return Promise.resolve(decodedCertificate);
     });
   },
+  loadEnrollSecret: () => {
+    const { GLOBAL_ENROLL_SECRETS } = endpoints;
+
+    return sendRequest("GET", GLOBAL_ENROLL_SECRETS);
+  },
   update: (formData: any) => {
     const { CONFIG } = endpoints;
 
-    // Failing policies webhook does not use flatten <> nest config helper
-    if (formData.webhook_settings.failing_policies_webhook) {
-      return sendRequest("PATCH", CONFIG, formData);
-    }
-
-    const configData = helpers.formatConfigDataForServer(formData);
-
-    if (get(configData, "smtp_settings.port")) {
-      configData.smtp_settings.port = parseInt(
-        configData.smtp_settings.port,
-        10
-      );
-    }
-    return sendRequest("PATCH", CONFIG, configData);
+    return sendRequest("PATCH", CONFIG, formData);
   },
 };

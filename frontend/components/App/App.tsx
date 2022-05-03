@@ -1,81 +1,88 @@
 import React, { useContext, useState } from "react";
-import { useDispatch, useSelector } from "react-redux";
+import { AxiosResponse } from "axios";
+import { InjectedRouter } from "react-router";
+import { QueryClient, QueryClientProvider } from "react-query";
 import classnames from "classnames";
 
-import { QueryClient, QueryClientProvider } from "react-query";
-
-import { authToken } from "utilities/local"; // @ts-ignore
-import { useDeepEffect } from "utilities/hooks"; // @ts-ignore
-import { fetchCurrentUser } from "redux/nodes/auth/actions"; // @ts-ignore
-import { getConfig, getEnrollSecret } from "redux/nodes/app/actions";
-import { IConfig } from "interfaces/config";
-import { IEnrollSecret } from "interfaces/enroll_secret";
-import { ITeamSummary } from "interfaces/team";
-import { IUser } from "interfaces/user";
+import PATHS from "router/paths";
 import TableProvider from "context/table";
 import QueryProvider from "context/query";
 import PolicyProvider from "context/policy";
+import NotificationProvider from "context/notification";
 import { AppContext } from "context/app";
-import FleetErrorBoundary from "pages/errors/FleetErrorBoundary";
+import { authToken } from "utilities/local"; // @ts-ignore
+import { useDeepEffect } from "utilities/hooks";
+
+import usersAPI from "services/entities/users";
+import configAPI from "services/entities/config";
+
+import { ErrorBoundary } from "react-error-boundary"; // @ts-ignore
+import Fleet403 from "pages/errors/Fleet403"; // @ts-ignore
+import Fleet404 from "pages/errors/Fleet404"; // @ts-ignore
+import Fleet500 from "pages/errors/Fleet500";
 import Spinner from "components/Spinner";
 
 interface IAppProps {
   children: JSX.Element;
-}
-
-interface ISecretResponse {
-  spec: {
-    secrets: IEnrollSecret[];
+  location: {
+    pathname: string;
   };
+  router: InjectedRouter;
 }
 
-interface IRootState {
-  auth: {
-    user: IUser;
-    available_teams: ITeamSummary[];
-  };
-}
-
-const App = ({ children }: IAppProps): JSX.Element => {
-  const dispatch = useDispatch();
-  const user = useSelector((state: IRootState) => state.auth.user);
-  const availableTeams = useSelector(
-    (state: IRootState) => state.auth.available_teams
-  );
+const App = ({ children, location, router }: IAppProps): JSX.Element => {
   const queryClient = new QueryClient();
   const {
-    setAvailableTeams,
-    setCurrentUser,
-    setConfig,
-    setEnrollSecret,
     currentUser,
     isGlobalObserver,
     isOnlyObserver,
     isAnyTeamMaintainerOrTeamAdmin,
+    setAvailableTeams,
+    setCurrentUser,
+    setConfig,
+    setEnrollSecret,
   } = useContext(AppContext);
 
   const [isLoading, setIsLoading] = useState<boolean>(false);
 
   useDeepEffect(() => {
+    const fetchCurrentUser = async () => {
+      try {
+        const { user, available_teams } = await usersAPI.me();
+        setCurrentUser(user);
+        setAvailableTeams(available_teams);
+      } catch (error) {
+        console.error(error);
+        if (!location || location?.pathname === "/setup") {
+          localStorage.removeItem("auth_token");
+          return;
+        }
+        router.push(PATHS.LOGIN);
+      }
+    };
+
+    const fetchConfig = async () => {
+      try {
+        const config = await configAPI.loadAll();
+        setConfig(config);
+      } catch (error) {
+        console.error(error);
+        return false;
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
     // on page refresh
-    if (!user && authToken()) {
-      dispatch(fetchCurrentUser()).catch(() => false);
+    if (!currentUser && authToken()) {
+      fetchCurrentUser();
     }
 
-    if (user) {
+    if (currentUser) {
       setIsLoading(true);
-      setCurrentUser(user);
-      setAvailableTeams(availableTeams);
-      dispatch(getConfig())
-        .then((config: IConfig) => {
-          setConfig(config);
-        })
-        .catch(() => false)
-        .finally(() => {
-          setIsLoading(false);
-        });
+      fetchConfig();
     }
-  }, [user]);
+  }, [currentUser, location]);
 
   useDeepEffect(() => {
     const canGetEnrollSecret =
@@ -87,14 +94,38 @@ const App = ({ children }: IAppProps): JSX.Element => {
       typeof isAnyTeamMaintainerOrTeamAdmin !== "undefined" &&
       !isAnyTeamMaintainerOrTeamAdmin;
 
+    const getEnrollSecret = async () => {
+      try {
+        const { spec } = await configAPI.loadEnrollSecret();
+        setEnrollSecret(spec.secrets);
+      } catch (error) {
+        console.error(error);
+        return false;
+      }
+    };
+
     if (canGetEnrollSecret) {
-      dispatch(getEnrollSecret())
-        .then((response: ISecretResponse) => {
-          setEnrollSecret(response.spec.secrets);
-        })
-        .catch(() => false);
+      getEnrollSecret();
     }
-  }, [currentUser, isGlobalObserver, isOnlyObserver]);
+  }, [currentUser, isGlobalObserver, isOnlyObserver, location]);
+
+  // "any" is used on purpose. We are using Axios but this
+  // function expects a native React Error type, which is incompatible.
+  const renderErrorOverlay = ({ error }: any) => {
+    // @ts-ignore
+    console.error(error);
+
+    const overlayError = error as AxiosResponse;
+    if (overlayError.status === 403 || overlayError.status === 402) {
+      return <Fleet403 />;
+    }
+
+    if (overlayError.status === 404) {
+      return <Fleet404 />;
+    }
+
+    return <Fleet500 />;
+  };
 
   const wrapperStyles = classnames("wrapper");
   return isLoading ? (
@@ -104,9 +135,14 @@ const App = ({ children }: IAppProps): JSX.Element => {
       <TableProvider>
         <QueryProvider>
           <PolicyProvider>
-            <FleetErrorBoundary>
-              <div className={wrapperStyles}>{children}</div>
-            </FleetErrorBoundary>
+            <NotificationProvider>
+              <ErrorBoundary
+                fallbackRender={renderErrorOverlay}
+                resetKeys={[location?.pathname]}
+              >
+                <div className={wrapperStyles}>{children}</div>
+              </ErrorBoundary>
+            </NotificationProvider>
           </PolicyProvider>
         </QueryProvider>
       </TableProvider>

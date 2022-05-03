@@ -3,8 +3,8 @@ import { isString, isPlainObject, isEmpty, reduce, trim, union } from "lodash";
 interface ILocationParams {
   pathPrefix?: string;
   routeTemplate?: string;
-  routeParams?: { [key: string]: any };
-  queryParams?: { [key: string]: any };
+  routeParams?: { [key: string]: string };
+  queryParams?: { [key: string]: string | number };
 }
 
 export const NEW_LABEL_HASH = "#new_label";
@@ -48,7 +48,7 @@ export const HOST_SELECT_STATUSES = [
   },
 ];
 
-export const isAcceptableStatus = (filter: string) => {
+export const isAcceptableStatus = (filter: string): boolean => {
   return (
     filter === "new" ||
     filter === "online" ||
@@ -57,7 +57,7 @@ export const isAcceptableStatus = (filter: string) => {
   );
 };
 
-export const isValidPolicyResponse = (filter: string) => {
+export const isValidPolicyResponse = (filter: string): boolean => {
   return filter === "pass" || filter === "fail";
 };
 

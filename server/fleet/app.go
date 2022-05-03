@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/fleetdm/fleet/v4/server/config"
-	"github.com/jinzhu/copier"
 )
 
 // SMTP settings names returned from API, these map to SMTPAuthType and
@@ -119,11 +118,12 @@ type AppConfig struct {
 	VulnerabilitySettings VulnerabilitySettings `json:"vulnerability_settings"`
 
 	WebhookSettings WebhookSettings `json:"webhook_settings"`
+	Integrations    Integrations    `json:"integrations"`
 }
 
 // EnrichedAppConfig contains the AppConfig along with additional fleet
 // instance configuration settings as returned by the
-// "GET /api/v1/fleet/config" API endpoint (and fleetctl get config).
+// "GET /api/latest/fleet/config" API endpoint (and fleetctl get config).
 type EnrichedAppConfig struct {
 	AppConfig
 
@@ -172,6 +172,7 @@ func (d *Duration) UnmarshalJSON(b []byte) error {
 type WebhookSettings struct {
 	HostStatusWebhook      HostStatusWebhookSettings      `json:"host_status_webhook"`
 	FailingPoliciesWebhook FailingPoliciesWebhookSettings `json:"failing_policies_webhook"`
+	VulnerabilitiesWebhook VulnerabilitiesWebhookSettings `json:"vulnerabilities_webhook"`
 	// Interval is the interval for running the webhooks.
 	//
 	// This value currently configures both the host status and failing policies webhooks.
@@ -198,6 +199,32 @@ type FailingPoliciesWebhookSettings struct {
 	HostBatchSize int `json:"host_batch_size"`
 }
 
+// VulnerabilitiesWebhookSettings holds the settings for vulnerabilities webhooks.
+type VulnerabilitiesWebhookSettings struct {
+	// Enable indicates whether the webhook for vulnerabilities is enabled.
+	Enable bool `json:"enable_vulnerabilities_webhook"`
+	// DestinationURL is the webhook's URL.
+	DestinationURL string `json:"destination_url"`
+	// HostBatchSize allows sending multiple requests in batches of hosts for each vulnerable software found.
+	// A value of 0 means no batching.
+	HostBatchSize int `json:"host_batch_size"`
+}
+
+// JiraIntegration configures an instance of an integration with the Jira
+// system.
+type JiraIntegration struct {
+	URL                           string `json:"url"`
+	Username                      string `json:"username"`
+	APIToken                      string `json:"api_token"`
+	ProjectKey                    string `json:"project_key"`
+	EnableSoftwareVulnerabilities bool   `json:"enable_software_vulnerabilities"`
+}
+
+// Integrations configures the integrations with external systems.
+type Integrations struct {
+	Jira []*JiraIntegration `json:"jira"`
+}
+
 func (c *AppConfig) ApplyDefaultsForNewInstalls() {
 	c.ServerSettings.EnableAnalytics = true
 
@@ -208,7 +235,7 @@ func (c *AppConfig) ApplyDefaultsForNewInstalls() {
 	c.SMTPSettings.SMTPVerifySSLCerts = true
 	c.SMTPSettings.SMTPEnableTLS = true
 
-	agentOptions := json.RawMessage(`{"config": {"options": {"logger_plugin": "tls", "pack_delimiter": "/", "logger_tls_period": 10, "distributed_plugin": "tls", "disable_distributed": false, "logger_tls_endpoint": "/api/v1/osquery/log", "distributed_interval": 10, "distributed_tls_max_attempts": 3}, "decorators": {"load": ["SELECT uuid AS host_uuid FROM system_info;", "SELECT hostname AS hostname FROM system_info;"]}}, "overrides": {}}`)
+	agentOptions := json.RawMessage(`{"config": {"options": {"logger_plugin": "tls", "pack_delimiter": "/", "logger_tls_period": 10, "distributed_plugin": "tls", "disable_distributed": false, "logger_tls_endpoint": "/api/osquery/log", "distributed_interval": 10, "distributed_tls_max_attempts": 3}, "decorators": {"load": ["SELECT uuid AS host_uuid FROM system_info;", "SELECT hostname AS hostname FROM system_info;"]}}, "overrides": {}}`)
 	c.AgentOptions = &agentOptions
 
 	c.HostSettings.EnableSoftwareInventory = true
@@ -280,6 +307,10 @@ type ListOptions struct {
 	// After denotes the row to start from. This is meant to be used in conjunction with OrderKey
 	// If OrderKey is "id", it'll assume After is a number and will try to convert it.
 	After string `query:"after,optional"`
+}
+
+func (l ListOptions) Empty() bool {
+	return l == ListOptions{}
 }
 
 type ListQueryOptions struct {
@@ -369,12 +400,13 @@ type UpdateIntervalConfig struct {
 // config file), not to be confused with VulnerabilitySettings which is the
 // configuration in AppConfig.
 type VulnerabilitiesConfig struct {
-	DatabasesPath         string        `json:"databases_path"`
-	Periodicity           time.Duration `json:"periodicity"`
-	CPEDatabaseURL        string        `json:"cpe_database_url"`
-	CVEFeedPrefixURL      string        `json:"cve_feed_prefix_url"`
-	CurrentInstanceChecks string        `json:"current_instance_checks"`
-	DisableDataSync       bool          `json:"disable_data_sync"`
+	DatabasesPath             string        `json:"databases_path"`
+	Periodicity               time.Duration `json:"periodicity"`
+	CPEDatabaseURL            string        `json:"cpe_database_url"`
+	CVEFeedPrefixURL          string        `json:"cve_feed_prefix_url"`
+	CurrentInstanceChecks     string        `json:"current_instance_checks"`
+	DisableDataSync           bool          `json:"disable_data_sync"`
+	RecentVulnerabilityMaxAge time.Duration `json:"recent_vulnerability_max_age"`
 }
 
 type LoggingPlugin struct {
@@ -416,10 +448,4 @@ type KafkaRESTConfig struct {
 	StatusTopic string `json:"status_topic"`
 	ResultTopic string `json:"result_topic"`
 	ProxyHost   string `json:"proxyhost"`
-}
-
-func (c *AppConfig) Clone() (*AppConfig, error) {
-	newAc := AppConfig{}
-	err := copier.Copy(&newAc, c)
-	return &newAc, err
 }

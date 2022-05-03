@@ -11,7 +11,7 @@ import (
 )
 
 // ListScheduledQueriesInPackWithStats loads a pack's scheduled queries and its aggregated stats.
-func (d *Datastore) ListScheduledQueriesInPackWithStats(ctx context.Context, id uint, opts fleet.ListOptions) ([]*fleet.ScheduledQuery, error) {
+func (ds *Datastore) ListScheduledQueriesInPackWithStats(ctx context.Context, id uint, opts fleet.ListOptions) ([]*fleet.ScheduledQuery, error) {
 	query := `
 		SELECT
 			sq.id,
@@ -28,20 +28,20 @@ func (d *Datastore) ListScheduledQueriesInPackWithStats(ctx context.Context, id 
 			sq.denylist,
 			q.query,
 			q.id AS query_id,
-			JSON_EXTRACT(ag.json_value, "$.user_time_p50") as user_time_p50,
-			JSON_EXTRACT(ag.json_value, "$.user_time_p95") as user_time_p95,
-			JSON_EXTRACT(ag.json_value, "$.system_time_p50") as system_time_p50,
-			JSON_EXTRACT(ag.json_value, "$.system_time_p95") as system_time_p95,
-			JSON_EXTRACT(ag.json_value, "$.total_executions") as total_executions
+			JSON_EXTRACT(ag.json_value, '$.user_time_p50') as user_time_p50,
+			JSON_EXTRACT(ag.json_value, '$.user_time_p95') as user_time_p95,
+			JSON_EXTRACT(ag.json_value, '$.system_time_p50') as system_time_p50,
+			JSON_EXTRACT(ag.json_value, '$.system_time_p95') as system_time_p95,
+			JSON_EXTRACT(ag.json_value, '$.total_executions') as total_executions
 		FROM scheduled_queries sq
 		JOIN queries q ON (sq.query_name = q.name)
-		LEFT JOIN aggregated_stats ag ON (ag.id=sq.id AND ag.type="scheduled_query")
+		LEFT JOIN aggregated_stats ag ON (ag.id=sq.id AND ag.type='scheduled_query')
 		WHERE sq.pack_id = ?
 	`
 	query = appendListOptionsToSQL(query, opts)
 	results := []*fleet.ScheduledQuery{}
 
-	if err := sqlx.SelectContext(ctx, d.reader, &results, query, id); err != nil {
+	if err := sqlx.SelectContext(ctx, ds.reader, &results, query, id); err != nil {
 		return nil, ctxerr.Wrap(ctx, err, "listing scheduled queries")
 	}
 
@@ -49,7 +49,7 @@ func (d *Datastore) ListScheduledQueriesInPackWithStats(ctx context.Context, id 
 }
 
 // ListScheduledQueriesInPack lists all the scheduled queries of a pack.
-func (d *Datastore) ListScheduledQueriesInPack(ctx context.Context, id uint) ([]*fleet.ScheduledQuery, error) {
+func (ds *Datastore) ListScheduledQueriesInPack(ctx context.Context, id uint) ([]*fleet.ScheduledQuery, error) {
 	query := `
 		SELECT
 			sq.id,
@@ -71,15 +71,15 @@ func (d *Datastore) ListScheduledQueriesInPack(ctx context.Context, id uint) ([]
 		WHERE sq.pack_id = ?
 	`
 	results := []*fleet.ScheduledQuery{}
-	if err := sqlx.SelectContext(ctx, d.reader, &results, query, id); err != nil {
+	if err := sqlx.SelectContext(ctx, ds.reader, &results, query, id); err != nil {
 		return nil, ctxerr.Wrap(ctx, err, "listing scheduled queries")
 	}
 
 	return results, nil
 }
 
-func (d *Datastore) NewScheduledQuery(ctx context.Context, sq *fleet.ScheduledQuery, opts ...fleet.OptionalArg) (*fleet.ScheduledQuery, error) {
-	return insertScheduledQueryDB(ctx, d.writer, sq)
+func (ds *Datastore) NewScheduledQuery(ctx context.Context, sq *fleet.ScheduledQuery, opts ...fleet.OptionalArg) (*fleet.ScheduledQuery, error) {
+	return insertScheduledQueryDB(ctx, ds.writer, sq)
 }
 
 func insertScheduledQueryDB(ctx context.Context, q sqlx.ExtContext, sq *fleet.ScheduledQuery) (*fleet.ScheduledQuery, error) {
@@ -134,8 +134,8 @@ func insertScheduledQueryDB(ctx context.Context, q sqlx.ExtContext, sq *fleet.Sc
 	return sq, nil
 }
 
-func (d *Datastore) SaveScheduledQuery(ctx context.Context, sq *fleet.ScheduledQuery) (*fleet.ScheduledQuery, error) {
-	return saveScheduledQueryDB(ctx, d.writer, sq)
+func (ds *Datastore) SaveScheduledQuery(ctx context.Context, sq *fleet.ScheduledQuery) (*fleet.ScheduledQuery, error) {
+	return saveScheduledQueryDB(ctx, ds.writer, sq)
 }
 
 func saveScheduledQueryDB(ctx context.Context, exec sqlx.ExecerContext, sq *fleet.ScheduledQuery) (*fleet.ScheduledQuery, error) {
@@ -158,8 +158,8 @@ func saveScheduledQueryDB(ctx context.Context, exec sqlx.ExecerContext, sq *flee
 	return sq, nil
 }
 
-func (d *Datastore) DeleteScheduledQuery(ctx context.Context, id uint) error {
-	return d.withRetryTxx(ctx, func(tx sqlx.ExtContext) error {
+func (ds *Datastore) DeleteScheduledQuery(ctx context.Context, id uint) error {
+	return ds.withRetryTxx(ctx, func(tx sqlx.ExtContext) error {
 		res, err := tx.ExecContext(ctx, `DELETE FROM scheduled_queries WHERE id = ?`, id)
 		if err != nil {
 			return ctxerr.Wrapf(ctx, err, "delete scheduled_queries")
@@ -179,7 +179,7 @@ func (d *Datastore) DeleteScheduledQuery(ctx context.Context, id uint) error {
 	})
 }
 
-func (d *Datastore) ScheduledQuery(ctx context.Context, id uint) (*fleet.ScheduledQuery, error) {
+func (ds *Datastore) ScheduledQuery(ctx context.Context, id uint) (*fleet.ScheduledQuery, error) {
 	query := `
 		SELECT
 			sq.id,
@@ -204,7 +204,7 @@ func (d *Datastore) ScheduledQuery(ctx context.Context, id uint) (*fleet.Schedul
 		WHERE sq.id = ?
 	`
 	sq := &fleet.ScheduledQuery{}
-	if err := sqlx.GetContext(ctx, d.reader, sq, query, id); err != nil {
+	if err := sqlx.GetContext(ctx, ds.reader, sq, query, id); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, ctxerr.Wrap(ctx, notFound("ScheduledQuery").WithID(id))
 		}

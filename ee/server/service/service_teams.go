@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 
@@ -25,7 +26,9 @@ func (svc *Service) NewTeam(ctx context.Context, p fleet.TeamPayload) (*fleet.Te
 		return nil, err
 	}
 	team := &fleet.Team{
-		AgentOptions: globalConfig.AgentOptions,
+		Config: fleet.TeamConfig{
+			AgentOptions: globalConfig.AgentOptions,
+		},
 	}
 
 	if p.Name == nil {
@@ -86,6 +89,9 @@ func (svc *Service) ModifyTeam(ctx context.Context, teamID uint, payload fleet.T
 	if payload.Description != nil {
 		team.Description = *payload.Description
 	}
+	if payload.WebhookSettings != nil {
+		team.Config.WebhookSettings = *payload.WebhookSettings
+	}
 
 	return svc.ds.SaveTeam(ctx, team)
 }
@@ -101,9 +107,9 @@ func (svc *Service) ModifyTeamAgentOptions(ctx context.Context, teamID uint, opt
 	}
 
 	if options != nil {
-		team.AgentOptions = &options
+		team.Config.AgentOptions = &options
 	} else {
-		team.AgentOptions = nil
+		team.Config.AgentOptions = nil
 	}
 
 	return svc.ds.SaveTeam(ctx, team)
@@ -258,6 +264,16 @@ func (svc *Service) DeleteTeam(ctx context.Context, teamID uint) error {
 	)
 }
 
+func (svc *Service) GetTeam(ctx context.Context, teamID uint) (*fleet.Team, error) {
+	if err := svc.authz.Authorize(ctx, &fleet.Team{ID: teamID}, fleet.ActionRead); err != nil {
+		return nil, err
+	}
+
+	logging.WithExtras(ctx, "id", teamID)
+
+	return svc.ds.Team(ctx, teamID)
+}
+
 func (svc *Service) TeamEnrollSecrets(ctx context.Context, teamID uint) ([]*fleet.EnrollSecret, error) {
 	if err := svc.authz.Authorize(ctx, &fleet.Team{ID: teamID}, fleet.ActionRead); err != nil {
 		return nil, err
@@ -285,4 +301,84 @@ func (svc *Service) ModifyTeamEnrollSecrets(ctx context.Context, teamID uint, se
 	}
 
 	return newSecrets, nil
+}
+
+func (svc Service) ApplyTeamSpecs(ctx context.Context, specs []*fleet.TeamSpec) error {
+	if err := svc.authz.Authorize(ctx, &fleet.Team{}, fleet.ActionRead); err != nil {
+		return err
+	}
+
+	// check auth for all teams specified first
+	for _, spec := range specs {
+		team, err := svc.ds.TeamByName(ctx, spec.Name)
+		if err != nil {
+			if err := ctxerr.Cause(err); err == sql.ErrNoRows {
+				// can the user create a new team?
+				if err := svc.authz.Authorize(ctx, &fleet.Team{}, fleet.ActionWrite); err != nil {
+					return err
+				}
+				continue
+			}
+
+			return err
+		}
+
+		// can the user modify each team it's trying to modify
+		if err := svc.authz.Authorize(ctx, team, fleet.ActionWrite); err != nil {
+			return err
+		}
+	}
+
+	config, err := svc.AppConfig(ctx)
+	if err != nil {
+		return err
+	}
+
+	for _, spec := range specs {
+		var secrets []*fleet.EnrollSecret
+		for _, secret := range spec.Secrets {
+			secrets = append(secrets, &fleet.EnrollSecret{
+				Secret: secret.Secret,
+			})
+		}
+
+		team, err := svc.ds.TeamByName(ctx, spec.Name)
+		if err != nil {
+			if err := ctxerr.Cause(err); err == sql.ErrNoRows {
+				agentOptions := spec.AgentOptions
+				if agentOptions == nil {
+					agentOptions = config.AgentOptions
+				}
+				_, err = svc.ds.NewTeam(ctx, &fleet.Team{
+					Name: spec.Name,
+					Config: fleet.TeamConfig{
+						AgentOptions: agentOptions,
+					},
+					Secrets: secrets,
+				})
+				if err != nil {
+					return err
+				}
+				continue
+			}
+
+			return err
+		}
+
+		team.Name = spec.Name
+		team.Config.AgentOptions = spec.AgentOptions
+		team.Secrets = secrets
+
+		_, err = svc.ds.SaveTeam(ctx, team)
+		if err != nil {
+			return err
+		}
+
+		err = svc.ds.ApplyEnrollSecrets(ctx, ptr.Uint(team.ID), secrets)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }

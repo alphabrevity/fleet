@@ -4,13 +4,9 @@ package service
 
 import (
 	"context"
-	"crypto/rand"
 	"fmt"
 	"html/template"
-	"math"
-	"math/big"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/WatchBeam/clock"
@@ -22,6 +18,8 @@ import (
 	"github.com/fleetdm/fleet/v4/server/sso"
 	kitlog "github.com/go-kit/kit/log"
 )
+
+var _ fleet.Service = (*Service)(nil)
 
 // Service is the struct implementing fleet.Service. Create a new one with NewService.
 type Service struct {
@@ -46,7 +44,14 @@ type Service struct {
 
 	authz *authz.Authorizer
 
-	jitterSeed int64
+	jitterMu *sync.Mutex
+	jitterH  map[time.Duration]*jitterHashTable
+
+	geoIP fleet.GeoIP
+}
+
+func (s *Service) LookupGeoIP(ctx context.Context, ip string) *fleet.GeoLocation {
+	return s.geoIP.Lookup(ctx, ip)
 }
 
 // NewService creates a new service from the config struct
@@ -65,6 +70,7 @@ func NewService(
 	carveStore fleet.CarveStore,
 	license fleet.LicenseInfo,
 	failingPolicySet fleet.FailingPolicySet,
+	geoIP fleet.GeoIP,
 ) (fleet.Service, error) {
 	authorizer, err := authz.NewAuthorizer()
 	if err != nil {
@@ -87,40 +93,14 @@ func NewService(
 		license:          license,
 		failingPolicySet: failingPolicySet,
 		authz:            authorizer,
+		jitterH:          make(map[time.Duration]*jitterHashTable),
+		jitterMu:         new(sync.Mutex),
+		geoIP:            geoIP,
 	}
-
-	// Try setting a first seed
-	svc.updateJitterSeedRand()
-	go svc.updateJitterSeed(ctx)
-
 	return validationMiddleware{svc, ds, sso}, nil
 }
 
-func (s *Service) updateJitterSeedRand() {
-	nBig, err := rand.Int(rand.Reader, big.NewInt(math.MaxInt))
-	if err != nil {
-		panic(err)
-	}
-	n := nBig.Int64()
-	atomic.StoreInt64(&s.jitterSeed, n)
-}
-
-func (s *Service) updateJitterSeed(ctx context.Context) {
-	for {
-		select {
-		case <-time.After(1 * time.Hour):
-			s.updateJitterSeedRand()
-		case <-ctx.Done():
-			return
-		}
-	}
-}
-
-func (s *Service) getJitterSeed() int64 {
-	return atomic.LoadInt64(&s.jitterSeed)
-}
-
-func (s Service) SendEmail(mail fleet.Email) error {
+func (s *Service) SendEmail(mail fleet.Email) error {
 	return s.mailService.SendEmail(mail)
 }
 

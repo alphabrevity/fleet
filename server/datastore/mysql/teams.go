@@ -15,21 +15,21 @@ import (
 
 var teamSearchColumns = []string{"name"}
 
-func (d *Datastore) NewTeam(ctx context.Context, team *fleet.Team) (*fleet.Team, error) {
-	err := d.withRetryTxx(ctx, func(tx sqlx.ExtContext) error {
+func (ds *Datastore) NewTeam(ctx context.Context, team *fleet.Team) (*fleet.Team, error) {
+	err := ds.withRetryTxx(ctx, func(tx sqlx.ExtContext) error {
 		query := `
     INSERT INTO teams (
       name,
-      agent_options,
-      description
-    ) VALUES ( ?, ?, ? )
+      description,
+      config
+    ) VALUES (?, ?, ?)
     `
 		result, err := tx.ExecContext(
 			ctx,
 			query,
 			team.Name,
-			team.AgentOptions,
 			team.Description,
+			team.Config,
 		)
 		if err != nil {
 			return ctxerr.Wrap(ctx, err, "insert team")
@@ -46,8 +46,8 @@ func (d *Datastore) NewTeam(ctx context.Context, team *fleet.Team) (*fleet.Team,
 	return team, nil
 }
 
-func (d *Datastore) Team(ctx context.Context, tid uint) (*fleet.Team, error) {
-	return teamDB(ctx, d.reader, tid)
+func (ds *Datastore) Team(ctx context.Context, tid uint) (*fleet.Team, error) {
+	return teamDB(ctx, ds.reader, tid)
 }
 
 func teamDB(ctx context.Context, q sqlx.QueryerContext, tid uint) (*fleet.Team, error) {
@@ -83,8 +83,8 @@ func saveTeamSecretsDB(ctx context.Context, exec sqlx.ExecerContext, team *fleet
 	return applyEnrollSecretsDB(ctx, exec, &team.ID, team.Secrets)
 }
 
-func (d *Datastore) DeleteTeam(ctx context.Context, tid uint) error {
-	return d.withRetryTxx(ctx, func(tx sqlx.ExtContext) error {
+func (ds *Datastore) DeleteTeam(ctx context.Context, tid uint) error {
+	return ds.withRetryTxx(ctx, func(tx sqlx.ExtContext) error {
 		_, err := tx.ExecContext(ctx, `DELETE FROM teams WHERE id = ?`, tid)
 		if err != nil {
 			return ctxerr.Wrapf(ctx, err, "delete team %d", tid)
@@ -95,26 +95,31 @@ func (d *Datastore) DeleteTeam(ctx context.Context, tid uint) error {
 			return ctxerr.Wrapf(ctx, err, "deleting pack_targets for team %d", tid)
 		}
 
+		_, err = tx.ExecContext(ctx, `DELETE FROM packs WHERE pack_type=?`, teamSchedulePackTypeByID(tid))
+		if err != nil {
+			return ctxerr.Wrapf(ctx, err, "deleting team global packs for team %d", tid)
+		}
+
 		return nil
 	})
 }
 
-func (d *Datastore) TeamByName(ctx context.Context, name string) (*fleet.Team, error) {
+func (ds *Datastore) TeamByName(ctx context.Context, name string) (*fleet.Team, error) {
 	sql := `
 		SELECT * FROM teams
 			WHERE name = ?
 	`
 	team := &fleet.Team{}
 
-	if err := sqlx.GetContext(ctx, d.reader, team, sql, name); err != nil {
+	if err := sqlx.GetContext(ctx, ds.reader, team, sql, name); err != nil {
 		return nil, ctxerr.Wrap(ctx, err, "select team")
 	}
 
-	if err := loadSecretsForTeamsDB(ctx, d.reader, []*fleet.Team{team}); err != nil {
+	if err := loadSecretsForTeamsDB(ctx, ds.reader, []*fleet.Team{team}); err != nil {
 		return nil, ctxerr.Wrap(ctx, err, "getting secrets for teams")
 	}
 
-	if err := loadUsersForTeamDB(ctx, d.reader, team); err != nil {
+	if err := loadUsersForTeamDB(ctx, ds.reader, team); err != nil {
 		return nil, err
 	}
 
@@ -165,16 +170,18 @@ func saveUsersForTeamDB(ctx context.Context, exec sqlx.ExecerContext, team *flee
 	return nil
 }
 
-func (d *Datastore) SaveTeam(ctx context.Context, team *fleet.Team) (*fleet.Team, error) {
-	err := d.withRetryTxx(ctx, func(tx sqlx.ExtContext) error {
+func (ds *Datastore) SaveTeam(ctx context.Context, team *fleet.Team) (*fleet.Team, error) {
+	err := ds.withRetryTxx(ctx, func(tx sqlx.ExtContext) error {
 		query := `
-		UPDATE teams SET
-			name = ?,
-			agent_options = ?,
-			description = ?
-		WHERE id = ?
-	`
-		_, err := tx.ExecContext(ctx, query, team.Name, team.AgentOptions, team.Description, team.ID)
+UPDATE teams
+SET
+    name = ?,
+    description = ?,
+    config = ?
+WHERE
+    id = ?
+`
+		_, err := tx.ExecContext(ctx, query, team.Name, team.Description, team.Config, team.ID)
 		if err != nil {
 			return ctxerr.Wrap(ctx, err, "saving team")
 		}
@@ -200,7 +207,7 @@ func updateTeamScheduleDB(ctx context.Context, exec sqlx.ExecerContext, team *fl
 
 // ListTeams lists all teams with limit, sort and offset passed in with
 // fleet.ListOptions
-func (d *Datastore) ListTeams(ctx context.Context, filter fleet.TeamFilter, opt fleet.ListOptions) ([]*fleet.Team, error) {
+func (ds *Datastore) ListTeams(ctx context.Context, filter fleet.TeamFilter, opt fleet.ListOptions) ([]*fleet.Team, error) {
 	query := fmt.Sprintf(`
 			SELECT *,
 				(SELECT count(*) FROM user_teams WHERE team_id = t.id) AS user_count,
@@ -208,15 +215,15 @@ func (d *Datastore) ListTeams(ctx context.Context, filter fleet.TeamFilter, opt 
 			FROM teams t
 			WHERE %s
 		`,
-		d.whereFilterTeams(filter, "t"),
+		ds.whereFilterTeams(filter, "t"),
 	)
 	query, params := searchLike(query, nil, opt.MatchQuery, teamSearchColumns...)
 	query = appendListOptionsToSQL(query, opt)
 	teams := []*fleet.Team{}
-	if err := sqlx.SelectContext(ctx, d.reader, &teams, query, params...); err != nil {
+	if err := sqlx.SelectContext(ctx, ds.reader, &teams, query, params...); err != nil {
 		return nil, ctxerr.Wrap(ctx, err, "list teams")
 	}
-	if err := loadSecretsForTeamsDB(ctx, d.reader, teams); err != nil {
+	if err := loadSecretsForTeamsDB(ctx, ds.reader, teams); err != nil {
 		return nil, ctxerr.Wrap(ctx, err, "getting secrets for teams")
 	}
 	return teams, nil
@@ -233,15 +240,15 @@ func loadSecretsForTeamsDB(ctx context.Context, q sqlx.QueryerContext, teams []*
 	return nil
 }
 
-func (d *Datastore) TeamsSummary(ctx context.Context) ([]*fleet.TeamSummary, error) {
+func (ds *Datastore) TeamsSummary(ctx context.Context) ([]*fleet.TeamSummary, error) {
 	teamsSummary := []*fleet.TeamSummary{}
-	if err := sqlx.SelectContext(ctx, d.reader, &teamsSummary, "SELECT id, name, description FROM teams"); err != nil {
+	if err := sqlx.SelectContext(ctx, ds.reader, &teamsSummary, "SELECT id, name, description FROM teams"); err != nil {
 		return nil, ctxerr.Wrap(ctx, err, "teams summary")
 	}
 	return teamsSummary, nil
 }
 
-func (d *Datastore) SearchTeams(ctx context.Context, filter fleet.TeamFilter, matchQuery string, omit ...uint) ([]*fleet.Team, error) {
+func (ds *Datastore) SearchTeams(ctx context.Context, filter fleet.TeamFilter, matchQuery string, omit ...uint) ([]*fleet.Team, error) {
 	sql := fmt.Sprintf(`
 			SELECT *,
 				(SELECT count(*) FROM user_teams WHERE team_id = t.id) AS user_count,
@@ -249,35 +256,35 @@ func (d *Datastore) SearchTeams(ctx context.Context, filter fleet.TeamFilter, ma
 			FROM teams t
 			WHERE %s AND %s
 		`,
-		d.whereOmitIDs("t.id", omit),
-		d.whereFilterTeams(filter, "t"),
+		ds.whereOmitIDs("t.id", omit),
+		ds.whereFilterTeams(filter, "t"),
 	)
 	sql, params := searchLike(sql, nil, matchQuery, teamSearchColumns...)
 	teams := []*fleet.Team{}
-	if err := sqlx.SelectContext(ctx, d.reader, &teams, sql, params...); err != nil {
+	if err := sqlx.SelectContext(ctx, ds.reader, &teams, sql, params...); err != nil {
 		return nil, ctxerr.Wrap(ctx, err, "search teams")
 	}
-	if err := loadSecretsForTeamsDB(ctx, d.reader, teams); err != nil {
+	if err := loadSecretsForTeamsDB(ctx, ds.reader, teams); err != nil {
 		return nil, ctxerr.Wrap(ctx, err, "getting secrets for teams")
 	}
 	return teams, nil
 }
 
-func (d *Datastore) TeamEnrollSecrets(ctx context.Context, teamID uint) ([]*fleet.EnrollSecret, error) {
+func (ds *Datastore) TeamEnrollSecrets(ctx context.Context, teamID uint) ([]*fleet.EnrollSecret, error) {
 	sql := `
 		SELECT * FROM enroll_secrets
 		WHERE team_id = ?
 	`
 	var secrets []*fleet.EnrollSecret
-	if err := sqlx.SelectContext(ctx, d.reader, &secrets, sql, teamID); err != nil {
+	if err := sqlx.SelectContext(ctx, ds.reader, &secrets, sql, teamID); err != nil {
 		return nil, ctxerr.Wrap(ctx, err, "get secrets")
 	}
 	return secrets, nil
 }
 
-func amountTeamsDB(db sqlx.Queryer) (int, error) {
+func amountTeamsDB(ctx context.Context, db sqlx.QueryerContext) (int, error) {
 	var amount int
-	err := sqlx.Get(db, &amount, `SELECT count(*) FROM teams`)
+	err := sqlx.GetContext(ctx, db, &amount, `SELECT count(*) FROM teams`)
 	if err != nil {
 		return 0, err
 	}
@@ -285,10 +292,10 @@ func amountTeamsDB(db sqlx.Queryer) (int, error) {
 }
 
 // TeamAgentOptions loads the agents options of a team.
-func (d *Datastore) TeamAgentOptions(ctx context.Context, tid uint) (*json.RawMessage, error) {
-	sql := `SELECT agent_options FROM teams WHERE id = ?`
+func (ds *Datastore) TeamAgentOptions(ctx context.Context, tid uint) (*json.RawMessage, error) {
+	sql := `SELECT config->"$.agent_options" FROM teams WHERE id = ?`
 	var agentOptions *json.RawMessage
-	if err := sqlx.GetContext(ctx, d.reader, &agentOptions, sql, tid); err != nil {
+	if err := sqlx.GetContext(ctx, ds.reader, &agentOptions, sql, tid); err != nil {
 		return nil, ctxerr.Wrap(ctx, err, "select team")
 	}
 	return agentOptions, nil

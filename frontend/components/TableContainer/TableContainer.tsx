@@ -18,12 +18,12 @@ import DataTable from "./DataTable/DataTable";
 import TableContainerUtils from "./TableContainerUtils";
 import { IActionButtonProps } from "./DataTable/ActionButton";
 
-export interface ITableSearchData {
+export interface ITableQueryData {
+  pageIndex: number;
+  pageSize: number;
   searchQuery: string;
   sortHeader: string;
   sortDirection: string;
-  pageSize: number;
-  pageIndex: number;
 }
 
 interface ITableContainerProps {
@@ -51,6 +51,10 @@ interface ITableContainerProps {
   searchable?: boolean;
   wideSearch?: boolean;
   disablePagination?: boolean;
+  disableNextPage?: boolean; // disableNextPage is a temporary workaround for the case
+  // where the number of items on the last page is equal to the page size.
+  // The old page controls for server-side pagination render a no results screen
+  // with a back button. This fix instead disables the next button in that case.
   disableCount?: boolean;
   primarySelectActionButtonVariant?: ButtonVariant;
   primarySelectActionButtonIcon?: string;
@@ -65,11 +69,14 @@ interface ITableContainerProps {
   highlightOnHover?: boolean;
   pageSize?: number;
   onActionButtonClick?: () => void;
-  onQueryChange?: (queryData: ITableSearchData) => void;
+  onQueryChange?: (queryData: ITableQueryData) => void;
   onPrimarySelectActionClick?: (selectedItemIds: number[]) => void;
   customControl?: () => JSX.Element;
+  stackControls?: boolean;
   onSelectSingleRow?: (value: Row) => void;
-  renderCount?: () => JSX.Element;
+  filters?: Record<string, string | number | boolean>;
+  renderCount?: () => JSX.Element | null;
+  renderFooter?: () => JSX.Element | null;
 }
 
 const baseClass = "table-container";
@@ -80,6 +87,7 @@ const DEFAULT_PAGE_INDEX = 0;
 const TableContainer = ({
   columns,
   data,
+  filters,
   isLoading,
   manualSortBy = false,
   defaultSortHeader = "name",
@@ -102,6 +110,7 @@ const TableContainer = ({
   searchable,
   wideSearch,
   disablePagination,
+  disableNextPage,
   disableCount,
   primarySelectActionButtonVariant = "brand",
   primarySelectActionButtonIcon,
@@ -119,8 +128,10 @@ const TableContainer = ({
   onQueryChange,
   onPrimarySelectActionClick,
   customControl,
+  stackControls,
   onSelectSingleRow,
   renderCount,
+  renderFooter,
 }: ITableContainerProps): JSX.Element => {
   const [searchQuery, setSearchQuery] = useState("");
   const [sortHeader, setSortHeader] = useState(defaultSortHeader || "");
@@ -155,10 +166,13 @@ const TableContainer = ({
   };
 
   const hasPageIndexChangedRef = useRef(false);
-  const onPaginationChange = (newPage: number) => {
-    setPageIndex(newPage);
-    hasPageIndexChangedRef.current = true;
-  };
+  const onPaginationChange = useCallback(
+    (newPage: number) => {
+      setPageIndex(newPage);
+      hasPageIndexChangedRef.current = true;
+    },
+    [hasPageIndexChangedRef]
+  );
 
   const onResultsCountChange = (resultsCount: number) => {
     setClientFilterCount(resultsCount);
@@ -203,6 +217,29 @@ const TableContainer = ({
     return data.length;
   }, [filteredCount, clientFilterCount, data]);
 
+  const renderPagination = useCallback(() => {
+    if (disablePagination || isClientSidePagination) {
+      return null;
+    }
+    return (
+      <Pagination
+        resultsOnCurrentPage={data.length}
+        currentPage={pageIndex}
+        resultsPerPage={pageSize}
+        onPaginationChange={onPaginationChange}
+        disableNextPage={disableNextPage}
+      />
+    );
+  }, [
+    data,
+    disablePagination,
+    isClientSidePagination,
+    disableNextPage,
+    pageIndex,
+    pageSize,
+    onPaginationChange,
+  ]);
+
   const opacity = isLoading ? { opacity: 0.4 } : { opacity: 1 };
 
   return (
@@ -215,48 +252,75 @@ const TableContainer = ({
           />
         </div>
       )}
-      <div className={`${baseClass}__header`}>
-        {renderCount && (
-          <p className={`${baseClass}__results-count`} style={opacity}>
-            {renderCount()}
-          </p>
-        )}
-        {!renderCount && data && displayCount() && !disableCount ? (
-          <p className={`${baseClass}__results-count`} style={opacity}>
-            {TableContainerUtils.generateResultsCountText(
-              resultsTitle,
-              displayCount()
+      <div
+        className={`${baseClass}__header ${
+          stackControls ? "stack-table-controls" : ""
+        }`}
+      >
+        <div
+          className={`${baseClass}__header-left ${
+            stackControls ? "stack-table-controls" : ""
+          }`}
+        >
+          <span className="results-count">
+            {renderCount && (
+              <div
+                className={`${baseClass}__results-count ${
+                  stackControls ? "stack-table-controls" : ""
+                }`}
+                style={opacity}
+              >
+                {renderCount()}
+              </div>
             )}
-            {resultsHtml}
-          </p>
-        ) : (
-          <p />
-        )}
-        <div className={`${baseClass}__table-controls`}>
-          {!hideActionButton && actionButtonText && (
-            <Button
-              disabled={disableActionButton}
-              onClick={onActionButtonClick}
-              variant={actionButtonVariant}
-              className={`${baseClass}__table-action-button`}
-            >
-              <>
-                {actionButtonText}
-                {actionButtonIcon && (
-                  <img
-                    src={actionButtonIcon}
-                    alt={`${actionButtonText} icon`}
-                  />
+            {!renderCount && data && displayCount() && !disableCount ? (
+              <div
+                className={`${baseClass}__results-count ${
+                  stackControls ? "stack-table-controls" : ""
+                }`}
+                style={opacity}
+              >
+                {TableContainerUtils.generateResultsCountText(
+                  resultsTitle,
+                  displayCount()
                 )}
-              </>
-            </Button>
-          )}
-          {customControl && customControl()}
+                {resultsHtml}
+              </div>
+            ) : (
+              <div />
+            )}
+          </span>
+          <span className={"controls"}>
+            {!hideActionButton && actionButtonText && (
+              <Button
+                disabled={disableActionButton}
+                onClick={onActionButtonClick}
+                variant={actionButtonVariant}
+                className={`${baseClass}__table-action-button`}
+              >
+                <>
+                  {actionButtonText}
+                  {actionButtonIcon && (
+                    <img
+                      src={actionButtonIcon}
+                      alt={`${actionButtonText} icon`}
+                    />
+                  )}
+                </>
+              </Button>
+            )}
+            {customControl && customControl()}
+          </span>
+        </div>
+
+        <div className={`${baseClass}__search`}>
           {/* Render search bar only if not empty component */}
           {searchable && !wideSearch && (
             <>
               <div
-                className={`${baseClass}__search-input`}
+                className={`${baseClass}__search-input ${
+                  stackControls ? "stack-table-controls" : ""
+                }`}
                 data-tip
                 data-for="search-tooltip"
                 data-tip-disable={!searchToolTipText}
@@ -282,7 +346,7 @@ const TableContainer = ({
           )}
         </div>
       </div>
-      <div className={`${baseClass}__data-table-container`}>
+      <div className={`${baseClass}__data-table-block`}>
         {/* No entities for this result. */}
         {(!isLoading && data.length === 0) ||
         (searchQuery.length && data.length === 0) ? (
@@ -319,6 +383,7 @@ const TableContainer = ({
                 isLoading={isLoading}
                 columns={columns}
                 data={data}
+                filters={filters}
                 manualSortBy={manualSortBy}
                 sortHeader={sortHeader}
                 sortDirection={sortDirection}
@@ -344,15 +409,9 @@ const TableContainer = ({
                 searchQuery={searchQuery}
                 searchQueryColumn={searchQueryColumn}
                 selectedDropdownFilter={selectedDropdownFilter}
+                renderFooter={renderFooter}
+                renderPagination={renderPagination}
               />
-              {!disablePagination && !isClientSidePagination && (
-                <Pagination
-                  resultsOnCurrentPage={data.length}
-                  currentPage={pageIndex}
-                  resultsPerPage={pageSize}
-                  onPaginationChange={onPaginationChange}
-                />
-              )}
             </div>
           </>
         )}

@@ -56,9 +56,8 @@ type RedisConfig struct {
 	TLSCA                     string        `yaml:"tls_ca"`
 	TLSServerName             string        `yaml:"tls_server_name"`
 	TLSHandshakeTimeout       time.Duration `yaml:"tls_handshake_timeout"`
-	// TODO(mna): should we allow insecure skip verify option?
-	MaxIdleConns int `yaml:"max_idle_conns"`
-	MaxOpenConns int `yaml:"max_open_conns"`
+	MaxIdleConns              int           `yaml:"max_idle_conns"`
+	MaxOpenConns              int           `yaml:"max_open_conns"`
 	// this config is an int on MysqlConfig, but it should be a time.Duration.
 	ConnMaxLifetime time.Duration `yaml:"conn_max_lifetime"`
 	IdleTimeout     time.Duration `yaml:"idle_timeout"`
@@ -94,6 +93,7 @@ type AuthConfig struct {
 type AppConfig struct {
 	TokenKeySize              int           `yaml:"token_key_size"`
 	InviteTokenValidityPeriod time.Duration `yaml:"invite_token_validity_period"`
+	EnableScheduledQueryStats bool          `yaml:"enable_scheduled_query_stats"`
 }
 
 // SessionConfig defines configs related to user sessions
@@ -134,6 +134,9 @@ type LoggingConfig struct {
 	JSON                 bool
 	DisableBanner        bool          `yaml:"disable_banner"`
 	ErrorRetentionPeriod time.Duration `yaml:"error_retention_period"`
+	TracingEnabled       bool          `yaml:"tracing_enabled"`
+	// TracingType can either be opentelemetry or elasticapm for whichever type of tracing wanted
+	TracingType string `yaml:"tracing_type"`
 }
 
 // FirehoseConfig defines configs for the AWS Firehose logging plugin
@@ -199,10 +202,11 @@ type FilesystemConfig struct {
 
 // KafkaRESTConfig defines configs for the Kafka REST Proxy logging plugin.
 type KafkaRESTConfig struct {
-	StatusTopic string `json:"status_topic" yaml:"status_topic"`
-	ResultTopic string `json:"result_topic" yaml:"result_topic"`
-	ProxyHost   string `json:"proxyhost" yaml:"proxyhost"`
-	Timeout     int    `json:"timeout" yaml:"timeout"`
+	StatusTopic      string `json:"status_topic" yaml:"status_topic"`
+	ResultTopic      string `json:"result_topic" yaml:"result_topic"`
+	ProxyHost        string `json:"proxyhost" yaml:"proxyhost"`
+	ContentTypeValue string `json:"content_type_value" yaml:"content_type_value"`
+	Timeout          int    `json:"timeout" yaml:"timeout"`
 }
 
 // LicenseConfig defines configs related to licensing Fleet.
@@ -212,17 +216,40 @@ type LicenseConfig struct {
 
 // VulnerabilitiesConfig defines configs related to vulnerability processing within Fleet.
 type VulnerabilitiesConfig struct {
-	DatabasesPath         string        `json:"databases_path" yaml:"databases_path"`
-	Periodicity           time.Duration `json:"periodicity" yaml:"periodicity"`
-	CPEDatabaseURL        string        `json:"cpe_database_url" yaml:"cpe_database_url"`
-	CVEFeedPrefixURL      string        `json:"cve_feed_prefix_url" yaml:"cve_feed_prefix_url"`
-	CurrentInstanceChecks string        `json:"current_instance_checks" yaml:"current_instance_checks"`
-	DisableDataSync       bool          `json:"disable_data_sync" yaml:"disable_data_sync"`
+	DatabasesPath             string        `json:"databases_path" yaml:"databases_path"`
+	Periodicity               time.Duration `json:"periodicity" yaml:"periodicity"`
+	CPEDatabaseURL            string        `json:"cpe_database_url" yaml:"cpe_database_url"`
+	CVEFeedPrefixURL          string        `json:"cve_feed_prefix_url" yaml:"cve_feed_prefix_url"`
+	CurrentInstanceChecks     string        `json:"current_instance_checks" yaml:"current_instance_checks"`
+	DisableDataSync           bool          `json:"disable_data_sync" yaml:"disable_data_sync"`
+	RecentVulnerabilityMaxAge time.Duration `json:"recent_vulnerability_max_age" yaml:"recent_vulnerability_max_age"`
 }
 
 // UpgradesConfig defines configs related to fleet server upgrades.
 type UpgradesConfig struct {
 	AllowMissingMigrations bool `json:"allow_missing_migrations" yaml:"allow_missing_migrations"`
+}
+
+type SentryConfig struct {
+	Dsn string `json:"dsn"`
+}
+
+type GeoIPConfig struct {
+	DatabasePath string `json:"database_path" yaml:"database_path"`
+}
+
+// PrometheusConfig holds the configuration for Fleet's prometheus metrics.
+type PrometheusConfig struct {
+	// BasicAuth is the HTTP Basic BasicAuth configuration.
+	BasicAuth HTTPBasicAuthConfig `json:"basic_auth" yaml:"basic_auth"`
+}
+
+// HTTPBasicAuthConfig holds configuration for HTTP Basic Auth.
+type HTTPBasicAuthConfig struct {
+	// Username is the HTTP Basic Auth username.
+	Username string `json:"username" yaml:"username"`
+	// Password is the HTTP Basic Auth password.
+	Password string `json:"password" yaml:"password"`
 }
 
 // FleetConfig stores the application configuration. Each subcategory is
@@ -249,6 +276,9 @@ type FleetConfig struct {
 	License          LicenseConfig
 	Vulnerabilities  VulnerabilitiesConfig
 	Upgrades         UpgradesConfig
+	Sentry           SentryConfig
+	GeoIP            GeoIPConfig
+	Prometheus       PrometheusConfig
 }
 
 type TLS struct {
@@ -381,11 +411,13 @@ func (man Manager) addConfigs() {
 		"Duration invite tokens remain valid (i.e. 1h)")
 	man.addConfigInt("app.token_key_size", 24,
 		"Size of generated tokens")
+	man.addConfigBool("app.enable_scheduled_query_stats", true,
+		"If true (default) it gets scheduled query stats from hosts")
 
 	// Session
 	man.addConfigInt("session.key_size", 64,
 		"Size of generated session keys")
-	man.addConfigDuration("session.duration", 24*time.Hour,
+	man.addConfigDuration("session.duration", 24*5*time.Hour,
 		"Duration session keys remain valid (i.e. 4h)")
 
 	// Osquery
@@ -443,6 +475,10 @@ func (man Manager) addConfigs() {
 		"Disable startup banner")
 	man.addConfigDuration("logging.error_retention_period", 24*time.Hour,
 		"Amount of time to keep errors, 0 means no expiration, < 0 means disable storage of errors")
+	man.addConfigBool("logging.tracing_enabled", false,
+		"Enable Tracing, further configured via standard env variables")
+	man.addConfigString("logging.tracing_type", "opentelemetry",
+		"Select the kind of tracing, defaults to opentelemetry, can also be elasticapm")
 
 	// Firehose
 	man.addConfigString("firehose.region", "", "AWS Region to use")
@@ -512,6 +548,8 @@ func (man Manager) addConfigs() {
 	man.addConfigString("kafkarest.status_topic", "", "Kafka REST topic for status logs")
 	man.addConfigString("kafkarest.result_topic", "", "Kafka REST topic for result logs")
 	man.addConfigString("kafkarest.proxyhost", "", "Kafka REST proxy host url")
+	man.addConfigString("kafkarest.content_type_value", "application/vnd.kafka.json.v1+json",
+		"Kafka REST proxy content type header (defaults to \"application/vnd.kafka.json.v1+json\"")
 	man.addConfigInt("kafkarest.timeout", 5, "Kafka REST proxy json post timeout")
 
 	// License
@@ -530,10 +568,22 @@ func (man Manager) addConfigs() {
 		"Allows to manually select an instance to do the vulnerability processing.")
 	man.addConfigBool("vulnerabilities.disable_data_sync", false,
 		"Skips synchronizing data streams and expects them to be available in the databases_path.")
+	man.addConfigDuration("vulnerabilities.recent_vulnerability_max_age", 30*24*time.Hour,
+		"Maximum age of the published date of a vulnerability (CVE) to be considered 'recent'.")
 
 	// Upgrades
 	man.addConfigBool("upgrades.allow_missing_migrations", false,
 		"Allow serve to run even if migrations are missing.")
+
+	// Sentry
+	man.addConfigString("sentry.dsn", "", "DSN for Sentry")
+
+	// GeoIP
+	man.addConfigString("geoip.database_path", "", "path to mmdb file")
+
+	// Prometheus
+	man.addConfigString("prometheus.basic_auth.username", "", "Prometheus username for HTTP Basic Auth")
+	man.addConfigString("prometheus.basic_auth.password", "", "Prometheus password for HTTP Basic Auth")
 }
 
 // LoadConfig will load the config variables into a fully initialized
@@ -603,6 +653,7 @@ func (man Manager) LoadConfig() FleetConfig {
 		App: AppConfig{
 			TokenKeySize:              man.getConfigInt("app.token_key_size"),
 			InviteTokenValidityPeriod: man.getConfigDuration("app.invite_token_validity_period"),
+			EnableScheduledQueryStats: man.getConfigBool("app.enable_scheduled_query_stats"),
 		},
 		Session: SessionConfig{
 			KeySize:  man.getConfigInt("session.key_size"),
@@ -637,6 +688,8 @@ func (man Manager) LoadConfig() FleetConfig {
 			JSON:                 man.getConfigBool("logging.json"),
 			DisableBanner:        man.getConfigBool("logging.disable_banner"),
 			ErrorRetentionPeriod: man.getConfigDuration("logging.error_retention_period"),
+			TracingEnabled:       man.getConfigBool("logging.tracing_enabled"),
+			TracingType:          man.getConfigString("logging.tracing_type"),
 		},
 		Firehose: FirehoseConfig{
 			Region:           man.getConfigString("firehose.region"),
@@ -688,24 +741,38 @@ func (man Manager) LoadConfig() FleetConfig {
 			EnableLogCompression: man.getConfigBool("filesystem.enable_log_compression"),
 		},
 		KafkaREST: KafkaRESTConfig{
-			StatusTopic: man.getConfigString("kafkarest.status_topic"),
-			ResultTopic: man.getConfigString("kafkarest.result_topic"),
-			ProxyHost:   man.getConfigString("kafkarest.proxyhost"),
-			Timeout:     man.getConfigInt("kafkarest.timeout"),
+			StatusTopic:      man.getConfigString("kafkarest.status_topic"),
+			ResultTopic:      man.getConfigString("kafkarest.result_topic"),
+			ProxyHost:        man.getConfigString("kafkarest.proxyhost"),
+			ContentTypeValue: man.getConfigString("kafkarest.content_type_value"),
+			Timeout:          man.getConfigInt("kafkarest.timeout"),
 		},
 		License: LicenseConfig{
 			Key: man.getConfigString("license.key"),
 		},
 		Vulnerabilities: VulnerabilitiesConfig{
-			DatabasesPath:         man.getConfigString("vulnerabilities.databases_path"),
-			Periodicity:           man.getConfigDuration("vulnerabilities.periodicity"),
-			CPEDatabaseURL:        man.getConfigString("vulnerabilities.cpe_database_url"),
-			CVEFeedPrefixURL:      man.getConfigString("vulnerabilities.cve_feed_prefix_url"),
-			CurrentInstanceChecks: man.getConfigString("vulnerabilities.current_instance_checks"),
-			DisableDataSync:       man.getConfigBool("vulnerabilities.disable_data_sync"),
+			DatabasesPath:             man.getConfigString("vulnerabilities.databases_path"),
+			Periodicity:               man.getConfigDuration("vulnerabilities.periodicity"),
+			CPEDatabaseURL:            man.getConfigString("vulnerabilities.cpe_database_url"),
+			CVEFeedPrefixURL:          man.getConfigString("vulnerabilities.cve_feed_prefix_url"),
+			CurrentInstanceChecks:     man.getConfigString("vulnerabilities.current_instance_checks"),
+			DisableDataSync:           man.getConfigBool("vulnerabilities.disable_data_sync"),
+			RecentVulnerabilityMaxAge: man.getConfigDuration("vulnerabilities.recent_vulnerability_max_age"),
 		},
 		Upgrades: UpgradesConfig{
 			AllowMissingMigrations: man.getConfigBool("upgrades.allow_missing_migrations"),
+		},
+		Sentry: SentryConfig{
+			Dsn: man.getConfigString("sentry.dsn"),
+		},
+		GeoIP: GeoIPConfig{
+			DatabasePath: man.getConfigString("geoip.database_path"),
+		},
+		Prometheus: PrometheusConfig{
+			BasicAuth: HTTPBasicAuthConfig{
+				Username: man.getConfigString("prometheus.basic_auth.username"),
+				Password: man.getConfigString("prometheus.basic_auth.password"),
+			},
 		},
 	}
 }
@@ -899,7 +966,7 @@ func (man Manager) loadConfigFile() {
 		os.Exit(1)
 	}
 
-	fmt.Println("Using config file: ", man.viper.ConfigFileUsed())
+	fmt.Println("Using config file:", man.viper.ConfigFileUsed())
 }
 
 // TestConfig returns a barebones configuration suitable for use in tests.
@@ -920,7 +987,7 @@ func TestConfig() FleetConfig {
 		},
 		Session: SessionConfig{
 			KeySize:  64,
-			Duration: 24 * 90 * time.Hour,
+			Duration: 24 * 5 * time.Hour,
 		},
 		Osquery: OsqueryConfig{
 			NodeKeySize:          24,

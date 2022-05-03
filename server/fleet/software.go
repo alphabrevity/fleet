@@ -1,5 +1,7 @@
 package fleet
 
+import "time"
+
 type SoftwareCVE struct {
 	CVE         string `json:"cve" db:"cve"`
 	DetailsLink string `json:"details_link" db:"details_link"`
@@ -17,14 +19,39 @@ type Software struct {
 	// Source is the source of the data (osquery table name).
 	Source string `json:"source" db:"source"`
 
+	// Release is the version of the OS this software was released on
+	// (e.g. "30.el7" for a CentOS package).
+	Release string `json:"release,omitempty" db:"release"`
+	// Vendor is the supplier of the software (e.g. "CentOS").
+	Vendor string `json:"vendor,omitempty" db:"vendor"`
+	// Arch is the architecture of the software (e.g. "x86_64").
+	Arch string `json:"arch,omitempty" db:"arch"`
+
 	// GenerateCPE is the CPE23 string that corresponds to the current software
 	GenerateCPE string `json:"generated_cpe" db:"generated_cpe"`
 	// Vulnerabilities lists all the found CVEs for the CPE
 	Vulnerabilities VulnerabilitiesSlice `json:"vulnerabilities"`
+	// HostsCount indicates the number of hosts with that software, filled only
+	// if explicitly requested.
+	HostsCount int `json:"hosts_count,omitempty" db:"hosts_count"`
+	// CountsUpdatedAt is the timestamp when the hosts count was last updated
+	// for that software, filled only if hosts count is requested.
+	CountsUpdatedAt time.Time `json:"-" db:"counts_updated_at"`
 }
 
 func (Software) AuthzType() string {
 	return "software"
+}
+
+// AuthzSoftwareInventory is used for access controls on software inventory.
+type AuthzSoftwareInventory struct {
+	// TeamID is the ID of the team. A value of nil means global scope.
+	TeamID *uint `json:"team_id"`
+}
+
+// AuthzType implements authz.AuthzTyper.
+func (s *AuthzSoftwareInventory) AuthzType() string {
+	return "software_inventory"
 }
 
 type VulnerabilitiesSlice []SoftwareCVE
@@ -32,12 +59,12 @@ type VulnerabilitiesSlice []SoftwareCVE
 // HostSoftware is the set of software installed on a specific host
 type HostSoftware struct {
 	// Software is the software information.
-	Software []Software `json:"software,omitempty"`
+	Software []Software `json:"software,omitempty" csv:"-"`
 	// Modified is a boolean indicating whether this has been modified since
 	// loading. If Modified is true, datastore implementations should save the
 	// data. We track this here because saving the software set is likely to be
 	// an expensive operation.
-	Modified bool `json:"-"`
+	Modified bool `json:"-" csv:"-"`
 }
 
 type SoftwareIterator interface {
@@ -54,4 +81,9 @@ type SoftwareListOptions struct {
 	VulnerableOnly bool  `query:"vulnerable,optional"`
 
 	SkipLoadingCVEs bool
+
+	// WithHostCounts indicates that the list of software should include the
+	// counts of hosts per software, and include only those software that have
+	// a count of hosts > 0.
+	WithHostCounts bool
 }

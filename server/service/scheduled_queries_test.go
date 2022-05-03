@@ -15,7 +15,7 @@ import (
 
 func TestScheduledQueriesAuth(t *testing.T) {
 	ds := new(mock.Store)
-	svc := newTestService(ds, nil, nil)
+	svc := newTestService(t, ds, nil, nil)
 
 	ds.ListScheduledQueriesInPackWithStatsFunc = func(ctx context.Context, id uint, opts fleet.ListOptions) ([]*fleet.ScheduledQuery, error) {
 		return nil, nil
@@ -43,40 +43,43 @@ func TestScheduledQueriesAuth(t *testing.T) {
 		shouldFailRead  bool
 	}{
 		{
-			"global admin",
-			&fleet.User{GlobalRole: ptr.String(fleet.RoleAdmin)},
-			false,
-			false,
+			name:            "global admin",
+			user:            &fleet.User{GlobalRole: ptr.String(fleet.RoleAdmin)},
+			shouldFailWrite: false,
+			shouldFailRead:  false,
 		},
 		{
-			"global maintainer",
-			&fleet.User{GlobalRole: ptr.String(fleet.RoleMaintainer)},
-			false,
-			false,
+			name:            "global maintainer",
+			user:            &fleet.User{GlobalRole: ptr.String(fleet.RoleMaintainer)},
+			shouldFailWrite: false,
+			shouldFailRead:  false,
 		},
 		{
-			"global observer",
-			&fleet.User{GlobalRole: ptr.String(fleet.RoleObserver)},
-			true,
-			true,
+			name:            "global observer",
+			user:            &fleet.User{GlobalRole: ptr.String(fleet.RoleObserver)},
+			shouldFailWrite: true,
+			shouldFailRead:  true,
+		},
+		// Team users cannot read or write scheduled queries using the below service APIs.
+		// Team users must use the "Team" endpoints (GetTeamScheduledQueries, TeamScheduleQuery,
+		// ModifyTeamScheduledQueries and DeleteTeamScheduledQueries).
+		{
+			name:            "team admin",
+			user:            &fleet.User{Teams: []fleet.UserTeam{{Team: fleet.Team{ID: 1}, Role: fleet.RoleAdmin}}},
+			shouldFailWrite: true,
+			shouldFailRead:  true,
 		},
 		{
-			"team admin",
-			&fleet.User{Teams: []fleet.UserTeam{{Team: fleet.Team{ID: 1}, Role: fleet.RoleAdmin}}},
-			true,
-			false,
+			name:            "team maintainer",
+			user:            &fleet.User{Teams: []fleet.UserTeam{{Team: fleet.Team{ID: 1}, Role: fleet.RoleMaintainer}}},
+			shouldFailWrite: true,
+			shouldFailRead:  true,
 		},
 		{
-			"team maintainer",
-			&fleet.User{Teams: []fleet.UserTeam{{Team: fleet.Team{ID: 1}, Role: fleet.RoleMaintainer}}},
-			true,
-			false,
-		},
-		{
-			"team observer",
-			&fleet.User{Teams: []fleet.UserTeam{{Team: fleet.Team{ID: 1}, Role: fleet.RoleObserver}}},
-			true,
-			true,
+			name:            "team observer",
+			user:            &fleet.User{Teams: []fleet.UserTeam{{Team: fleet.Team{ID: 1}, Role: fleet.RoleObserver}}},
+			shouldFailWrite: true,
+			shouldFailRead:  true,
 		},
 	}
 	for _, tt := range testCases {
@@ -103,7 +106,7 @@ func TestScheduledQueriesAuth(t *testing.T) {
 
 func TestScheduleQuery(t *testing.T) {
 	ds := new(mock.Store)
-	svc := newTestService(ds, nil, nil)
+	svc := newTestService(t, ds, nil, nil)
 
 	expectedQuery := &fleet.ScheduledQuery{
 		Name:      "foobar",
@@ -123,7 +126,7 @@ func TestScheduleQuery(t *testing.T) {
 
 func TestScheduleQueryNoName(t *testing.T) {
 	ds := new(mock.Store)
-	svc := newTestService(ds, nil, nil)
+	svc := newTestService(t, ds, nil, nil)
 
 	expectedQuery := &fleet.ScheduledQuery{
 		Name:      "foobar",
@@ -158,7 +161,7 @@ func TestScheduleQueryNoName(t *testing.T) {
 
 func TestScheduleQueryNoNameMultiple(t *testing.T) {
 	ds := new(mock.Store)
-	svc := newTestService(ds, nil, nil)
+	svc := newTestService(t, ds, nil, nil)
 
 	expectedQuery := &fleet.ScheduledQuery{
 		Name:      "foobar-1",
